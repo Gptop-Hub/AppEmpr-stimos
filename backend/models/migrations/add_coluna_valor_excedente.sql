@@ -1,0 +1,1 @@
+ALTER TABLE parcelas ADD COLUMN valor_excedente REAL DEFAULT 0;

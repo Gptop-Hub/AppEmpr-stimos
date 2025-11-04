@@ -1,0 +1,1 @@
+ALTER TABLE parcelas ADD COLUMN parcela_origem_numero INTEGER;

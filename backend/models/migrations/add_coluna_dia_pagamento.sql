@@ -1,0 +1,1 @@
+ALTER TABLE emprestimos ADD COLUMN dia_pagamento INTEGER;

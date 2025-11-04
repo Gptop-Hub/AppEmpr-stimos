@@ -1,0 +1,1 @@
+ALTER TABLE parcelas ADD COLUMN observacao TEXT DEFAULT '';

@@ -1,0 +1,1 @@
+ALTER TABLE parcelas_originais ADD COLUMN data_pagamento TEXT;

@@ -1,0 +1,1 @@
+ALTER TABLE pagamentos ADD COLUMN parcela_origem INTEGER;

@@ -1,0 +1,81 @@
+{
+  "name": "app-emprestimos",
+  "version": "0.1.3",
+  "description": "Sistema de Emprestimos transformado em app desktop com Electron",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "backend": "node backend/index.js",
+    "frontend": "cd frontend && npm run dev",
+    "dev": "concurrently \"npm:backend\" \"npm:frontend\" \"npm:start\"",
+    "build:renderer": "cd frontend && npm run build",
+    "build": "npm run build:renderer && electron-builder --windows",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "postinstall": "electron-builder install-app-deps",
+    "publish:win": "npm run build:renderer && electron-builder --windows --publish always"
+  },
+  "author": "Seu Nome",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "electron-updater": "^6.6.2",
+    "express": "^5.1.0",
+    "googleapis": "^157.0.0",
+    "multer": "^2.0.2",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0",
+    "electron": "^38.4.0",
+    "electron-builder": "^26.0.12",
+    "vite": "^6.4.1"
+  },
+  "build": {
+    "appId": "com.seunome.sistema-emprestimos",
+    "productName": "App Emprestimos",
+    "directories": {
+      "output": "dist_electron",
+      "buildResources": "build"
+    },
+    "artifactName": "App-Emprestimos-${version}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "backend/**/*",
+      "frontend/dist/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+    ],
+    "asarUnpack": [
+      "**/node_modules/sqlite3/**"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Gptop-Hub",
+        "repo": "app-emprestimos"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "ia32"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "App Emprestimos",
+      "differentialPackage": true
+    }
+  }
+}

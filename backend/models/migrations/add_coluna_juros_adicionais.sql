@@ -1,0 +1,1 @@
+ALTER TABLE parcelas ADD COLUMN juros_adicionais REAL DEFAULT 0;
