@@ -25,7 +25,7 @@ function formatDataDDMonthYYYY(iso) {
 }
 
 /**
- * parcelas: array de parcelas (deveriam estar 'enriched' com original_valor_capital/original_valor_juros quando existirem)
+ * parcelas: array de parcelas (somente cronograma atual)
  * atualIndex: índice da próxima parcela pendente
  * valor: número (float) recebido do frontend
  * data: ISO string da data do pagamento
@@ -44,20 +44,21 @@ module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualInde
     throw new Error('Nenhuma parcela pendente para quitação.');
   }
 
-  // soma do capital restante = original_valor_capital quando disponível, senão valor_capital
+  // Soma apenas o capital remanescente do cronograma atual
   const somaCapital = unpaid.reduce((s, p) => {
-    const cap = Number(p.original_valor_capital != null ? p.original_valor_capital : (p.valor_capital || 0));
+    const cap = Number(p.valor_capital ?? 0);
     return s + cap;
   }, 0);
 
-  // juros da parcela atual (original se existir)
-  const jurosAtual = Number(proxima.original_valor_juros != null ? proxima.original_valor_juros : (proxima.valor_juros || 0));
+  // Juros considerados somente da próxima parcela atual
+  const jurosAtual = Number(proxima.valor_juros ?? 0);
 
   const expected = Number((somaCapital + jurosAtual).toFixed(2));
   const provided = Number(Number(valor || 0).toFixed(2));
 
-  // validação rigorosa (mesma regra do backend anterior)
-  if (Math.abs(provided - expected) > 0.01) {
+  // validação com tolerância por arredondamento (até 5 centavos de diferença)
+  const diff = Math.abs(provided - expected);
+  if (diff > 0.05) {
     // mensagem legível para o backend que será retornada ao frontend
     throw new Error(`Valor para quitação inválido. Esperado ${formatBRL(expected)}, recebido ${formatBRL(provided)}.`);
   }
@@ -70,7 +71,10 @@ module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualInde
 
   const updates = unpaid.map((p, idx) => {
     const isFirst = idx === 0;
-    const valorCapital = Number(p.original_valor_capital != null ? p.original_valor_capital : p.valor_capital || 0);
+
+    // Usa somente os valores atuais registrados na parcela
+    const valorCapital = Number(p.valor_capital ?? 0);
+
     const jurosToUse = isFirst ? jurosAtual : 0;
     const valorPago = Number((valorCapital + jurosToUse).toFixed(2));
 
@@ -91,7 +95,7 @@ module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualInde
         tipo_pagamento: 'quitar'
       };
     } else {
-      // parcela "fantasma": marca como paga (porque o empréstimo foi quitado) ou podemos manter pago=true
+      // parcela "fantasma": marca como quitada porque o empréstimo foi quitado
       const explic = `PARCELA FANTASMA: Empréstimo quitado em ${dataString}.`;
       return {
         id: p.id,
@@ -101,8 +105,8 @@ module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualInde
         vencimento: p.vencimento,
         pago: 1,
         valor_total: p.valor_total,
-        valor_capital: p.valor_capital || valorCapital,
-        valor_juros: p.valor_juros || 0,
+        valor_capital: p.valor_capital != null ? p.valor_capital : valorCapital,
+        valor_juros: p.valor_juros != null ? p.valor_juros : 0,
         observacao: explic,
         explicacao: explic,
         tipo_pagamento: 'quitar'

@@ -1,10 +1,10 @@
 // backend/controllers/emprestimosController.js
 const emprestimoService = require('../services/servicoemprestimo');
-const gerarParcelas = require('../utils/gerarParcelas'); // para endpoint de preview (opcional)
-const db = require('../models/database'); // adicionado para exclusão direta
+const gerarParcelas = require('../utils/gerarParcelas'); // usado no preview
+const db = require('../models/database'); // sqlite handle
 
 /**
- * Helpers locais de parsing (mantive as funções existentes)
+ * Helpers locais de parsing
  */
 function toNumberSafe(v) {
   if (v === null || v === undefined) return null;
@@ -12,22 +12,17 @@ function toNumberSafe(v) {
   const s = String(v).trim();
   if (s === '') return null;
   let t = s;
-  if (t.indexOf(',') > -1 && t.indexOf('.') > -1) {
-    t = t.replace(/\./g, '').replace(',', '.');
-  } else if (t.indexOf(',') > -1 && t.indexOf('.') === -1) {
-    t = t.replace(',', '.');
-  }
+  if (t.includes(',') && t.includes('.')) t = t.replace(/\./g, '').replace(',', '.');
+  else if (t.includes(',') && !t.includes('.')) t = t.replace(',', '.');
   const n = Number(t);
   return Number.isNaN(n) ? null : n;
 }
-
 function toIntegerSafe(v) {
   const n = toNumberSafe(v);
   if (n === null) return null;
   const i = Math.trunc(n);
   return Number.isFinite(i) ? i : null;
 }
-
 function isValidDateString(s) {
   if (!s) return false;
   const d = new Date(s);
@@ -35,10 +30,11 @@ function isValidDateString(s) {
 }
 
 /**
- * listarTodos
+ * GET /emprestimos
  */
 exports.listarTodos = async (req, res) => {
   try {
+    // Mantém comportamento atual (sem filtrar ativo). Podemos ajustar depois, se quiser.
     const emprestimos = await emprestimoService.listarTodosEmprestimos();
     res.json(emprestimos);
   } catch (error) {
@@ -48,17 +44,14 @@ exports.listarTodos = async (req, res) => {
 };
 
 /**
- * listarHistorico
- * Retorna empréstimos quitados (usa a função do service listarEmprestimosQuitados).
+ * GET /emprestimos/historico
  */
 exports.listarHistorico = async (req, res) => {
   try {
-    // chama a função do service que já deve retornar apenas quitados
     if (typeof emprestimoService.listarEmprestimosQuitados !== 'function') {
       console.error('listarHistorico: serviço listarEmprestimosQuitados não encontrado.');
       return res.status(500).json({ error: 'Serviço de histórico não disponível.' });
     }
-
     const quitados = await emprestimoService.listarEmprestimosQuitados();
     res.json(quitados);
   } catch (error) {
@@ -68,7 +61,7 @@ exports.listarHistorico = async (req, res) => {
 };
 
 /**
- * buscarPorId
+ * GET /emprestimos/:id
  */
 exports.buscarPorId = async (req, res) => {
   try {
@@ -82,7 +75,7 @@ exports.buscarPorId = async (req, res) => {
 };
 
 /**
- * atualizar
+ * PUT /emprestimos/:id
  */
 exports.atualizar = async (req, res) => {
   try {
@@ -90,13 +83,15 @@ exports.atualizar = async (req, res) => {
     res.json(resultado);
   } catch (error) {
     console.error('atualizar erro:', error);
-    if (error.message === 'Campos obrigatórios ausentes.') return res.status(400).json({ error: error.message });
+    if (error.message === 'Campos obrigatórios ausentes.') {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: 'Erro ao atualizar empréstimo.' });
   }
 };
 
 /**
- * criar
+ * POST /emprestimos
  */
 exports.criar = async (req, res) => {
   try {
@@ -118,63 +113,69 @@ exports.criar = async (req, res) => {
     const valor = toNumberSafe(rawValor);
     const taxa_juros = toNumberSafe(rawTaxa);
     const parcelas = rawParcelas == null ? null : toIntegerSafe(rawParcelas);
-    const data = (typeof rawData === 'string') ? rawData : (rawData instanceof Date ? rawData.toISOString().split('T')[0] : null);
+    const data = (typeof rawData === 'string')
+      ? rawData
+      : (rawData instanceof Date ? rawData.toISOString().split('T')[0] : null);
 
     if (!cliente_id) return res.status(400).json({ error: 'cliente_id inválido ou ausente.' });
     if (valor == null || valor <= 0) return res.status(400).json({ error: 'valor inválido ou ausente.' });
-    if (!data || !isValidDateString(data)) return res.status(400).json({ error: 'data (data de início) inválida ou ausente. Use ISO YYYY-MM-DD.' });
+    if (!data || !isValidDateString(data)) {
+      return res.status(400).json({ error: 'data (início) inválida ou ausente. Use YYYY-MM-DD.' });
+    }
     if (!modalidade) return res.status(400).json({ error: 'modalidade ausente.' });
     if (taxa_juros == null) return res.status(400).json({ error: 'taxa_juros ausente.' });
-
     if (modalidade === 'parcelado' && (parcelas == null || parcelas <= 0)) {
       return res.status(400).json({ error: 'parcelas ausente ou inválida para modalidade parcelado.' });
     }
 
+    // Determinar dia_pagamento / primeira data de pagamento
     let diaToSave = null;
+    let primeiraDataPagamento = null;
+
     if (rawDataPagamento && typeof rawDataPagamento === 'string' && isValidDateString(rawDataPagamento)) {
-      diaToSave = new Date(rawDataPagamento).getDate();
+      const dtPag = new Date(rawDataPagamento);
+      primeiraDataPagamento = dtPag.toISOString().split('T')[0];
+      diaToSave = dtPag.getDate();
     } else if (rawDiaPagamento != null && rawDiaPagamento !== '') {
       const parsed = toIntegerSafe(rawDiaPagamento);
-      if (parsed != null) {
-        diaToSave = Math.min(31, Math.max(1, parsed));
-      }
+      if (parsed != null) diaToSave = Math.min(31, Math.max(1, parsed));
     }
 
     if (diaToSave == null) {
       const dt = new Date(data);
-      if (!Number.isNaN(dt.getTime())) {
-        diaToSave = dt.getDate();
-      } else {
-        diaToSave = 15;
-      }
+      diaToSave = !Number.isNaN(dt.getTime()) ? dt.getDate() : 15;
     }
 
+    // 👇 AQUI entra a separação: valor_emprestado e valor_atual começam iguais ao valor informado
     const dadosParaCriar = {
       cliente_id,
       valor,
       data,
       modalidade,
-      parcelas: parcelas,
+      parcelas,
       taxa_juros,
       observacao: observacao || '',
-      dia_pagamento: Number(diaToSave)
+      dia_pagamento: Number(diaToSave),
+      data_pagamento: primeiraDataPagamento || null,
+      valor_emprestado: valor, // novo campo sem quebrar o legado
+      valor_atual: valor       // capital atual inicial = valor emprestado
     };
 
     console.log('Chamando servico.criarEmprestimo com:', dadosParaCriar);
-
     const resultado = await emprestimoService.criarEmprestimo(dadosParaCriar);
-
     console.log('Empréstimo criado:', resultado);
     res.json(resultado);
   } catch (error) {
     console.error('criar erro:', error);
-    if (error.message === 'Campos obrigatórios ausentes.') return res.status(400).json({ error: error.message });
+    if (error.message === 'Campos obrigatórios ausentes.') {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: error.message || 'Erro ao criar empréstimo.' });
   }
 };
 
 /**
- * atualizarParcelaVencimento
+ * PATCH/PUT /parcelas/:id (vencimento)
  */
 exports.atualizarParcelaVencimento = async (req, res) => {
   try {
@@ -192,24 +193,37 @@ exports.atualizarParcelaVencimento = async (req, res) => {
 };
 
 /**
- * previewParcelas (opcional)
+ * POST /emprestimos/preview
  */
 exports.previewParcelas = (req, res) => {
   try {
-    const { valor: rawValor, taxa_juros: rawTaxa, parcelas: rawParcelas, data: rawData, data_pagamento: rawDataPagamento, dia_pagamento: rawDiaPagamento } = req.body;
+    const {
+      valor: rawValor,
+      taxa_juros: rawTaxa,
+      parcelas: rawParcelas,
+      data: rawData,
+      data_pagamento: rawDataPagamento,
+      dia_pagamento: rawDiaPagamento
+    } = req.body;
 
     const valor = toNumberSafe(rawValor);
     const taxa_juros = toNumberSafe(rawTaxa);
     const qtdParcelas = toIntegerSafe(rawParcelas);
-    const dataInicio = rawData && isValidDateString(rawData) ? rawData : (new Date()).toISOString().split('T')[0];
+    const dataInicio = rawData && isValidDateString(rawData)
+      ? rawData
+      : (new Date()).toISOString().split('T')[0];
 
     if (valor == null || taxa_juros == null || qtdParcelas == null) {
       return res.status(400).json({ error: 'Parâmetros inválidos. Forneça valor, taxa_juros e parcelas.' });
     }
 
+    let primeiroVencimento = null;
     let diaPagamento = undefined;
+
     if (rawDataPagamento && typeof rawDataPagamento === 'string' && isValidDateString(rawDataPagamento)) {
-      diaPagamento = rawDataPagamento;
+      const dtPag = new Date(rawDataPagamento);
+      primeiroVencimento = dtPag.toISOString().split('T')[0];
+      diaPagamento = dtPag.getDate();
     } else if (rawDiaPagamento != null && rawDiaPagamento !== '') {
       const parsed = toIntegerSafe(rawDiaPagamento);
       if (parsed != null) diaPagamento = parsed;
@@ -220,7 +234,8 @@ exports.previewParcelas = (req, res) => {
       taxa_juros: Number(taxa_juros),
       qtdParcelas: Number(qtdParcelas),
       dataInicio: dataInicio,
-      diaPagamento: diaPagamento
+      diaPagamento,
+      primeiroVencimento
     });
 
     return res.json({ parcelas: geradas });
@@ -231,8 +246,7 @@ exports.previewParcelas = (req, res) => {
 };
 
 /**
- * excluir empréstimo (nova função)
- * Recebe senha no body: { password: '...' }
+ * DELETE /emprestimos/:id (com senha)
  */
 exports.excluir = async (req, res) => {
   try {
@@ -246,7 +260,6 @@ exports.excluir = async (req, res) => {
       return res.status(401).json({ error: 'Senha incorreta.' });
     }
 
-    // exclusão em transação: pagamentos, parcelas, parcelas_originais, emprestimos
     db.serialize(() => {
       db.run('BEGIN TRANSACTION');
       db.run('DELETE FROM pagamentos WHERE emprestimo_id = ?', [id], (err) => {

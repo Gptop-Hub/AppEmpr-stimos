@@ -1,5 +1,6 @@
 import './axios-setup';
-import React, { Suspense } from 'react';
+import './theme.css';
+import React, { Suspense, useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 
@@ -8,7 +9,7 @@ const Clientes      = React.lazy(() => import('./componentes/clientes'));
 const NovoCliente   = React.lazy(() => import('./componentes/novocliente'));
 const NovoEmprestimo= React.lazy(() => import('./componentes/novoemprestimo'));
 const Pagamento     = React.lazy(() => import('./componentes/pagamento'));
-const Emprestimos   = React.lazy(() => import('./componentes/emprestimo'));
+const Emprestimos   = React.lazy(() => import('./componentes/Emprestimos'));
 const Vencidos      = React.lazy(() => import('./componentes/vencidos'));
 const Backup        = React.lazy(() => import('./componentes/backup'));
 const Historico     = React.lazy(() => import('./componentes/historico'));
@@ -35,12 +36,12 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-const AppWrapper = () => (
+const AppWrapper = ({ theme, onToggleTheme }) => (
   <ErrorBoundary>
     <Suspense fallback={<div style={{ padding: 20 }}>Carregando aplicação...</div>}>
       <HashRouter>
         <Routes>
-          <Route path="/" element={<App />}>
+          <Route path="/" element={<App theme={theme} onToggleTheme={onToggleTheme} />}>
             <Route index element={<Clientes />} />
             <Route path="clientes" element={<Clientes />} />
             <Route path="novocliente" element={<NovoCliente />} />
@@ -61,4 +62,21 @@ const AppWrapper = () => (
   </ErrorBoundary>
 );
 
-ReactDOM.createRoot(document.getElementById('root')).render(<AppWrapper />);
+function ThemedApp() {
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
+
+  return <AppWrapper theme={theme} onToggleTheme={toggleTheme} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <ThemedApp />
+  </React.StrictMode>
+);

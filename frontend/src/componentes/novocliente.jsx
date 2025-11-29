@@ -32,8 +32,8 @@ export default function NovoCliente() {
   const handleCPF = e => {
     let v = e.target.value.replace(/\D/g, '').slice(0, 11);
     v = v.replace(/^(\d{3})(\d)/, '$1.$2')
-         .replace(/(\d{3})(\d)/, '$1.$2')
-         .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+      .replace(/(\d{3})(\d)/, '$1.$2')
+      .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
     setForm(prev => ({ ...prev, cpf: v }));
     setCpfExiste(false);
   };
@@ -174,123 +174,306 @@ export default function NovoCliente() {
     }
   };
 
-  const bloco = { marginBottom: 20, paddingBottom: 10, borderBottom: '1px solid #ccc' };
-  const label = { display: 'block', marginTop: 8 };
+  // ===== estilos unificados modo escuro =====
+  const containerStyle = {
+    padding: 20,
+    maxWidth: 700,
+    margin: '0 auto',
+    fontFamily: 'sans-serif',
+    color: 'var(--text-main)',
+  };
+
+  const cardStyle = {
+    background: 'var(--bg-card)',
+    borderRadius: 8,
+    border: '1px solid var(--border-soft)',
+    padding: 20,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
+  };
+
+  const fieldStyle = {
+    width: '100%',
+    padding: 8,
+    borderRadius: 4,
+    border: '1px solid var(--border-soft)',
+    background: 'var(--bg-body)',
+    color: 'var(--text-main)',
+    boxSizing: 'border-box',
+  };
+
+  const labelStyle = {
+    display: 'block',
+    marginBottom: 4,
+    fontSize: 14,
+    color: 'var(--text-main)',
+  };
+
+  const helperTextStyle = {
+    fontSize: 12,
+    color: 'var(--text-muted)',
+  };
+
+  const primaryButtonStyle = {
+    marginTop: 16,
+    width: '100%',
+    padding: '10px 14px',
+    borderRadius: 6,
+    border: 'none',
+    background: '#22c55e',
+    color: '#fff',
+    fontWeight: 600,
+    cursor: 'pointer',
+  };
+
+  const bloco = {
+    marginBottom: 20,
+    paddingBottom: 14,
+    borderBottom: '1px solid var(--border-soft)',
+  };
+
   const avisoId = { color: 'red', marginTop: 4 };
 
   return (
-    <div style={{ maxWidth: 600, margin: 'auto', padding: 20 }}>
-      <h2 style={{ textAlign: 'center' }}>🧍‍♂️ Novo Cliente</h2>
+    <div style={containerStyle}>
+      <div style={cardStyle}>
+        <h2 style={{ textAlign: 'center', marginTop: 0, marginBottom: 20 }}>🧍‍♂️ Novo Cliente</h2>
 
-      {/* ID opcional */}
-      <div style={{ marginBottom: 20 }}>
-        <label style={label}>ID (opcional)</label>
-        <input
-          name="id"
-          value={form.id}
-          onChange={(e) => {
-            const somenteNumeros = e.target.value.replace(/\D/g, '');
-            setForm(prev => ({ ...prev, id: somenteNumeros }));
-            setIdExiste(false);
-          }}
-          onBlur={onBlurId}
-          placeholder="Se vazio, será automático"
-          style={{ width: '100%', padding: 8 }}
-          inputMode="numeric"
-          pattern="\d*"
-        />
-        {idExiste && <div style={avisoId}>❌ Esse ID já existe! Escolha outro.</div>}
-      </div>
-
-      {/* Dados Pessoais */}
-      <div style={bloco}>
-        <h4>👤 Dados Pessoais</h4>
-        <label style={label}>Nome</label>
-        <input name="nome" value={form.nome} onChange={handleChange} />
-
-        <label style={label}>CPF</label>
-        <input name="cpf" value={form.cpf} onChange={handleCPF} onBlur={onBlurCpf} />
-        {cpfExiste && <div style={{ color: 'red', marginTop: 4 }}>❌ CPF já cadastrado no sistema.</div>}
-
-        <label style={label}>Telefone</label>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <input name="ddd" value={form.ddd} onChange={handleChange} placeholder="DDD" style={{ width: 60 }} />
-          <input name="telefone" value={form.telefone} onChange={handleTelefone} placeholder="99999-9999" />
+        {/* ID opcional */}
+        <div style={{ marginBottom: 20 }}>
+          <label style={labelStyle}>ID (opcional)</label>
+          <input
+            name="id"
+            value={form.id}
+            onChange={(e) => {
+              const somenteNumeros = e.target.value.replace(/\D/g, '');
+              setForm(prev => ({ ...prev, id: somenteNumeros }));
+              setIdExiste(false);
+            }}
+            onBlur={onBlurId}
+            placeholder="Se vazio, será automático"
+            style={fieldStyle}
+            inputMode="numeric"
+            pattern="\d*"
+          />
+          <div style={helperTextStyle}>Se deixar em branco, o sistema gera o ID automaticamente.</div>
+          {idExiste && <div style={avisoId}>❌ Esse ID já existe! Escolha outro.</div>}
         </div>
-      </div>
 
-      {/* Endereço */}
-      <div style={bloco}>
-        <h4>🏠 Endereço</h4>
-        <label style={label}>Cidade</label>
-        <input
-          list="cidades"
-          name="cidade"
-          value={form.cidade}
-          onChange={handleChange}
-          placeholder="Escolha ou digite"
-        />
-        <datalist id="cidades">
-          <option value="Itumbiara" />
-          <option value="Araporã" />
-          <option value="Outra" />
-        </datalist>
-        {form.cidade === 'Outra' && (
-          <input name="cidadeLivre" value={form.cidadeLivre} onChange={handleChange} placeholder="Digite a cidade" />
-        )}
+        {/* Dados Pessoais */}
+        <div style={bloco}>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>👤 Dados Pessoais</h4>
 
-        <label style={label}>Bairro</label>
-        <input name="bairro" value={form.bairro} onChange={handleChange} />
+          <label style={labelStyle}>Nome</label>
+          <input
+            name="nome"
+            value={form.nome}
+            onChange={handleChange}
+            style={fieldStyle}
+          />
 
-        <label style={label}>Rua</label>
-        <input name="rua" value={form.rua} onChange={handleChange} />
+          <label style={labelStyle}>CPF</label>
+          <input
+            name="cpf"
+            value={form.cpf}
+            onChange={handleCPF}
+            onBlur={onBlurCpf}
+            style={fieldStyle}
+          />
+          {cpfExiste && (
+            <div style={{ color: 'red', marginTop: 4 }}>
+              ❌ CPF já cadastrado no sistema.
+            </div>
+          )}
 
-        <label style={label}>Número</label>
-        <input name="numero" value={form.numero} onChange={handleChange} />
+          <label style={labelStyle}>Telefone</label>
+          <div style={{ display: 'flex', gap: 10 }}>
+            <input
+              name="ddd"
+              value={form.ddd}
+              onChange={handleChange}
+              placeholder="DDD"
+              style={{ ...fieldStyle, width: 70 }}
+            />
+            <input
+              name="telefone"
+              value={form.telefone}
+              onChange={handleTelefone}
+              placeholder="99999-9999"
+              style={{ ...fieldStyle, flex: 1 }}
+            />
+          </div>
+        </div>
 
-        <label style={{ marginTop: 12 }}>
-          <input type="checkbox" name="emPredio" checked={form.emPredio} onChange={handleChange} /> 🏢 Mora em prédio
-        </label>
+        {/* Endereço */}
+        <div style={bloco}>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>🏠 Endereço</h4>
 
-        {form.emPredio && (
-          <>
-            <input name="nomePredio" value={form.nomePredio} onChange={handleChange} placeholder="Nome do prédio" />
-            <input name="andar" value={form.andar} onChange={handleChange} placeholder="Andar" />
-            <input name="flat" value={form.flat} onChange={handleChange} placeholder="Flat/Nº Apto" />
-          </>
-        )}
-      </div>
+          <label style={labelStyle}>Cidade</label>
+          <input
+            list="cidades"
+            name="cidade"
+            value={form.cidade}
+            onChange={handleChange}
+            placeholder="Escolha ou digite"
+            style={fieldStyle}
+          />
+          <datalist id="cidades">
+            <option value="Itumbiara" />
+            <option value="Araporã" />
+            <option value="Outra" />
+          </datalist>
 
-      {/* Trabalho */}
-      <div style={bloco}>
-        <h4>💼 Trabalho</h4>
-        <input name="empresa" value={form.empresa} onChange={handleChange} placeholder="Nome da empresa" />
-        <input name="ruaEmpresa" value={form.ruaEmpresa} onChange={handleChange} placeholder="Rua da empresa" />
-        <input name="bairroEmpresa" value={form.bairroEmpresa} onChange={handleChange} placeholder="Bairro da empresa" />
-        <input name="funcao" value={form.funcao} onChange={handleChange} placeholder="Função" />
-        <input name="telEmpresa" value={form.telEmpresa} onChange={handleChange} placeholder="Telefone" />
-      </div>
+          {form.cidade === 'Outra' && (
+            <input
+              name="cidadeLivre"
+              value={form.cidadeLivre}
+              onChange={handleChange}
+              placeholder="Digite a cidade"
+              style={{ ...fieldStyle, marginTop: 8 }}
+            />
+          )}
 
-      {/* Extras */}
-      <div style={bloco}>
-        <h4>📝 Extras</h4>
-        <label style={label}>Referência</label>
-        <input name="referencia" value={form.referencia} onChange={handleChange} />
+          <label style={labelStyle}>Bairro</label>
+          <input
+            name="bairro"
+            value={form.bairro}
+            onChange={handleChange}
+            style={fieldStyle}
+          />
 
-        <label style={label}>Observação</label>
-        <textarea name="observacao" value={form.observacao} onChange={handleChange} />
-      </div>
+          <label style={labelStyle}>Rua</label>
+          <input
+            name="rua"
+            value={form.rua}
+            onChange={handleChange}
+            style={fieldStyle}
+          />
 
-      {/* Data */}
-      <div style={bloco}>
-        <h4>📅 Data de Cadastro</h4>
-        <input name="criadoEm" type="date" value={form.criadoEm} onChange={handleChange} />
-      </div>
+          <label style={labelStyle}>Número</label>
+          <input
+            name="numero"
+            value={form.numero}
+            onChange={handleChange}
+            style={fieldStyle}
+          />
 
-      <div style={{ textAlign: 'center', marginTop: 30 }}>
-        <button onClick={salvar} style={{ padding: 10, width: '100%' }}>
-          Cadastrar Cliente
-        </button>
+          <label style={{ ...labelStyle, marginTop: 12 }}>
+            <input
+              type="checkbox"
+              name="emPredio"
+              checked={form.emPredio}
+              onChange={handleChange}
+              style={{ marginRight: 6 }}
+            />
+            🏢 Mora em prédio
+          </label>
+
+          {form.emPredio && (
+            <>
+              <input
+                name="nomePredio"
+                value={form.nomePredio}
+                onChange={handleChange}
+                placeholder="Nome do prédio"
+                style={{ ...fieldStyle, marginTop: 8 }}
+              />
+              <input
+                name="andar"
+                value={form.andar}
+                onChange={handleChange}
+                placeholder="Andar"
+                style={{ ...fieldStyle, marginTop: 8 }}
+              />
+              <input
+                name="flat"
+                value={form.flat}
+                onChange={handleChange}
+                placeholder="Flat/Nº Apto"
+                style={{ ...fieldStyle, marginTop: 8 }}
+              />
+            </>
+          )}
+        </div>
+
+        {/* Trabalho */}
+        <div style={bloco}>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>💼 Trabalho</h4>
+
+          <input
+            name="empresa"
+            value={form.empresa}
+            onChange={handleChange}
+            placeholder="Nome da empresa"
+            style={fieldStyle}
+          />
+          <input
+            name="ruaEmpresa"
+            value={form.ruaEmpresa}
+            onChange={handleChange}
+            placeholder="Rua da empresa"
+            style={{ ...fieldStyle, marginTop: 8 }}
+          />
+          <input
+            name="bairroEmpresa"
+            value={form.bairroEmpresa}
+            onChange={handleChange}
+            placeholder="Bairro da empresa"
+            style={{ ...fieldStyle, marginTop: 8 }}
+          />
+          <input
+            name="funcao"
+            value={form.funcao}
+            onChange={handleChange}
+            placeholder="Função"
+            style={{ ...fieldStyle, marginTop: 8 }}
+          />
+          <input
+            name="telEmpresa"
+            value={form.telEmpresa}
+            onChange={handleChange}
+            placeholder="Telefone"
+            style={{ ...fieldStyle, marginTop: 8 }}
+          />
+        </div>
+
+        {/* Extras */}
+        <div style={bloco}>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>📝 Extras</h4>
+
+          <label style={labelStyle}>Referência</label>
+          <input
+            name="referencia"
+            value={form.referencia}
+            onChange={handleChange}
+            style={fieldStyle}
+          />
+
+          <label style={{ ...labelStyle, marginTop: 8 }}>Observação</label>
+          <textarea
+            name="observacao"
+            value={form.observacao}
+            onChange={handleChange}
+            style={{ ...fieldStyle, minHeight: 80, resize: 'vertical' }}
+          />
+        </div>
+
+        {/* Data */}
+        <div style={bloco}>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>📅 Data de Cadastro</h4>
+          <input
+            name="criadoEm"
+            type="date"
+            value={form.criadoEm}
+            onChange={handleChange}
+            style={fieldStyle}
+          />
+        </div>
+
+        <div style={{ marginTop: 20 }}>
+          <button onClick={salvar} style={primaryButtonStyle}>
+            Cadastrar Cliente
+          </button>
+        </div>
       </div>
     </div>
   );

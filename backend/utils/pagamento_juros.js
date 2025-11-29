@@ -41,8 +41,8 @@ module.exports = async function aplicarPagamentoJuros(parcelas = [], atualIndex 
   if (!p) return [];
 
   const valorNum = Number(valor || 0);
-  const jurosOriginais = Number(p.original_valor_juros ?? p.valor_juros ?? 0);
-  const jurosPagos = Math.min(valorNum, jurosOriginais);
+  const jurosAtuais = Number(p.valor_juros ?? 0);
+  const jurosPagos = Math.min(valorNum, jurosAtuais);
 
   const dataFormatada = (() => {
     try {
@@ -68,7 +68,7 @@ module.exports = async function aplicarPagamentoJuros(parcelas = [], atualIndex 
   const novaDataAtual = addMonthsSafe(baseDateForCurrent, 1, desiredDayCurrent);
   const novaISOAtual = formatISODate(novaDataAtual);
 
-  // 🔹 Aqui mantemos o valor de juros original para exibição
+  // Mantém o valor de juros atual para exibição
   updates.push({
     id: p.id,
     valor_pago: p.valor_pago != null ? Number(Number(p.valor_pago).toFixed(2)) : 0,
@@ -77,7 +77,7 @@ module.exports = async function aplicarPagamentoJuros(parcelas = [], atualIndex 
     pago: false,
     valor_total: p.valor_total,
     valor_capital: p.valor_capital,
-    valor_juros: jurosOriginais, // mantém o valor original para visualização
+    valor_juros: jurosAtuais, // mantém o valor atual para visualização
     observacao: observacao || null,
     explicacao: explicacaoAcumulada,
     tipo_pagamento: 'pagamento_juros',
@@ -105,7 +105,7 @@ module.exports = async function aplicarPagamentoJuros(parcelas = [], atualIndex 
         pago: q.pago,
         valor_total: q.valor_total,
         valor_capital: q.valor_capital,
-        valor_juros: q.valor_juros ?? q.original_valor_juros, // mantém visível
+        valor_juros: q.valor_juros, // mantém visível
         observacao: q.observacao || null,
         explicacao: q.explicacao || null,
         tipo_pagamento: q.tipo_pagamento || null,
@@ -133,7 +133,7 @@ module.exports = async function aplicarPagamentoJuros(parcelas = [], atualIndex 
       pago: q.pago,
       valor_total: q.valor_total,
       valor_capital: q.valor_capital,
-      valor_juros: q.valor_juros ?? q.original_valor_juros, // mantém visível
+      valor_juros: q.valor_juros, // mantém visível
       observacao: q.observacao || null,
       explicacao: explicacaoAdj,
       tipo_pagamento: q.tipo_pagamento || null,

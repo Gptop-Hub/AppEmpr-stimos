@@ -1,113 +1,94 @@
-// ...existing code...
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
 const path = require('path');
+const { getDbPath } = require('../utils/paths');
 
-// Onde salvar o banco?
-// Em dev, usa ./backend/data/database.db (gravável).
-// Empacotado, o main.js injeta APP_DATA_DIR => usamos %APPDATA%/App Empréstimos/emprestimos-data/database.db
-const APP_DATA_DIR = process.env.APP_DATA_DIR;
+const log = (...args) => console.info('[database]', ...args);
 
-let baseDir;
-if (APP_DATA_DIR && APP_DATA_DIR.trim()) {
-  baseDir = path.join(APP_DATA_DIR, 'emprestimos-data');
-} else {
-  baseDir = path.join(__dirname, 'data'); // dev fallback
-}
-fs.mkdirSync(baseDir, { recursive: true });
+let currentDb = null;
 
-const dbPath = path.join(baseDir, 'database.db');
-const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
-  if (err) {
-    console.error('[ERRO] Abrindo banco de dados:', err && err.message);
-  } else {
-    console.info('[DB] Banco aberto em', dbPath);
-  }
-});
-
-/**
- * Escapa um identificador (nome de tabela/coluna) para uso em PRAGMA/SQL simples.
- * Não remove a necessidade de usar prepared statements para valores.
- */
-function escapeIdentifier(id) {
-  return String(id).replace(/"/g, '""');
+function escapeIdentifier(identifier) {
+  return String(identifier).replace(/"/g, '""');
 }
 
-/**
- * Verifica se uma coluna existe em uma tabela (callback boolean)
- */
-function colunaExiste(tabela, coluna, callback) {
-  const tabelaEsc = escapeIdentifier(tabela);
-  db.all(`PRAGMA table_info("${tabelaEsc}");`, (err, colunas) => {
+function columnExists(db, table, column, callback) {
+  const tableEscaped = escapeIdentifier(table);
+  db.all(`PRAGMA table_info("${tableEscaped}");`, (err, rows) => {
     if (err) {
-      console.error(`[ERRO] Verificando coluna ${coluna} na tabela ${tabela}:`, err.message);
-      return callback(false);
+      log(`Error checking column ${table}.${column}: ${err.message}`);
+      callback(false);
+      return;
     }
-    const existe = Array.isArray(colunas) && colunas.some(col => col && col.name === coluna);
-    callback(existe);
+    const exists = Array.isArray(rows) && rows.some((col) => col && col.name === column);
+    callback(exists);
   });
 }
 
-/**
- * Aplica uma migration condicionalmente (só se a coluna não existir).
- * Trata erros 'duplicate column' / 'already exists' como informativos (não falha).
- */
-function aplicarMigracaoCondicional(file, tabela, coluna) {
-  const migrationsDir = path.resolve(__dirname, '../migrations');
-  const caminho = path.join(migrationsDir, file);
-  if (!fs.existsSync(caminho)) {
-    // arquivo de migração ausente: apenas ignore
-    console.warn(`[MIGRAÇÃO] Arquivo não encontrado: ${file}. Pulando.`);
+function applyMigrationIfMissing(db, file, table, column) {
+  // Aponta para backend/models/migrations
+  const migrationsDir = path.resolve(__dirname, './migrations');
+  const migrationPath = path.join(migrationsDir, file);
+
+  if (!fs.existsSync(migrationPath)) {
+    log(`Migration file not found (${file}). Skipping.`);
     return;
   }
-  const sql = fs.readFileSync(caminho, 'utf8');
 
-  colunaExiste(tabela, coluna, (existe) => {
-    if (existe) {
-      console.log(`[INFO] Coluna '${coluna}' já existe na tabela '${tabela}'. Ignorando ${file}`);
+  const sql = fs.readFileSync(migrationPath, 'utf8');
+  columnExists(db, table, column, (exists) => {
+    if (exists) {
+      log(`Column ${table}.${column} already present. Ignoring ${file}.`);
       return;
     }
 
     db.exec(sql, (err) => {
       if (err) {
-        const msg = (err && err.message) ? String(err.message) : String(err);
-        const lower = msg.toLowerCase();
-        if (lower.includes('duplicate column') || lower.includes('already exists') || lower.includes('column') && lower.includes('already exists')) {
-          console.log(`[INFO] Migração ${file} não aplicada pois a coluna já existe (${coluna}). Mensagem: ${msg}`);
+        const message = String(err && err.message ? err.message : err);
+        const lower = message.toLowerCase();
+        if (lower.includes('duplicate column') || lower.includes('already exists')) {
+          log(`Migration ${file} skipped because column already exists (${column}).`);
           return;
         }
-        console.error(`[ERRO] Aplicando migração ${file}:`, msg);
+        console.error(`[database] Migration ${file} failed: ${message}`);
         return;
       }
-      console.log(`[MIGRAÇÃO] Aplicada: ${file}`);
+      log(`Migration applied: ${file}`);
     });
   });
 }
 
-/**
- * Aplica várias migrações (chamadas idempotentes)
- */
-function aplicarMigracoes() {
-  aplicarMigracaoCondicional('add_coluna_data_pagamento.sql', 'parcelas', 'data_pagamento');
-  aplicarMigracaoCondicional('add_coluna_juros_adicionais.sql', 'parcelas', 'juros_adicionais');
-  aplicarMigracaoCondicional('add_coluna_dia_pagamento.sql', 'emprestimos', 'dia_pagamento');
-  aplicarMigracaoCondicional('add_coluna_valor_pago.sql', 'parcelas', 'valor_pago');
-  aplicarMigracaoCondicional('add_coluna_observacao_parcelas.sql', 'parcelas', 'observacao');
-  aplicarMigracaoCondicional('add_coluna_pago.sql', 'parcelas', 'pago');
-  aplicarMigracaoCondicional('add_coluna_valor_excedente.sql', 'parcelas', 'valor_excedente');
-  aplicarMigracaoCondicional('add_coluna_parcela_origem_em_pagamentos.sql', 'pagamentos', 'parcela_origem');
-  aplicarMigracaoCondicional('capital_restante.sql', 'parcelas', 'capital_restante');
-  aplicarMigracaoCondicional('create_table_parcelas_originais.sql', 'parcelas_originais', 'id');
-  aplicarMigracaoCondicional('add_coluna_parcela_origem_numero.sql', 'parcelas', 'parcela_origem_numero');
-  aplicarMigracaoCondicional('add_coluna_parcela_id.sql', 'parcelas_originais', 'parcela_id');
-  aplicarMigracaoCondicional('add_coluna_valor_pago_parcelas_originais.sql', 'parcelas_originais', 'valor_pago');
-  aplicarMigracaoCondicional('add_coluna_valor_excedente_parcelas_originais.sql', 'parcelas_originais', 'valor_excedente');
-  aplicarMigracaoCondicional('add_coluna_data_pagamento_parcelas_originais.sql', 'parcelas_originais', 'data_pagamento');
-  aplicarMigracaoCondicional('add_coluna_pago_parcelas_originais.sql', 'parcelas_originais', 'pago');
+function applyMigrations(db) {
+  // antigas
+  applyMigrationIfMissing(db, 'add_coluna_data_pagamento.sql', 'parcelas', 'data_pagamento');
+  applyMigrationIfMissing(db, 'add_coluna_juros_adicionais.sql', 'parcelas', 'juros_adicionais');
+  applyMigrationIfMissing(db, 'add_coluna_dia_pagamento.sql', 'emprestimos', 'dia_pagamento');
+  applyMigrationIfMissing(db, 'add_coluna_valor_pago.sql', 'parcelas', 'valor_pago');
+  applyMigrationIfMissing(db, 'add_coluna_observacao_parcelas.sql', 'parcelas', 'observacao');
+  applyMigrationIfMissing(db, 'add_coluna_pago.sql', 'parcelas', 'pago');
+  applyMigrationIfMissing(db, 'add_coluna_valor_excedente.sql', 'parcelas', 'valor_excedente');
+  applyMigrationIfMissing(db, 'add_coluna_parcela_origem_em_pagamentos.sql', 'pagamentos', 'parcela_origem');
+  applyMigrationIfMissing(db, 'capital_restante.sql', 'parcelas', 'capital_restante');
+  applyMigrationIfMissing(db, 'create_table_parcelas_originais.sql', 'parcelas_originais', 'id');
+  applyMigrationIfMissing(db, 'add_coluna_parcela_origem_numero.sql', 'parcelas', 'parcela_origem_numero');
+  applyMigrationIfMissing(db, 'add_coluna_parcela_id.sql', 'parcelas_originais', 'parcela_id');
+  applyMigrationIfMissing(db, 'add_coluna_valor_pago_parcelas_originais.sql', 'parcelas_originais', 'valor_pago');
+  applyMigrationIfMissing(db, 'add_coluna_valor_excedente_parcelas_originais.sql', 'parcelas_originais', 'valor_excedente');
+  applyMigrationIfMissing(db, 'add_coluna_data_pagamento_parcelas_originais.sql', 'parcelas_originais', 'data_pagamento');
+  applyMigrationIfMissing(db, 'add_coluna_pago_parcelas_originais.sql', 'parcelas_originais', 'pago');
+
+  // novas
+  applyMigrationIfMissing(db, 'renegociacao.sql', 'emprestimos', 'ativo');
+
+  // ⬇️ aqui trocamos a sentinela para 'updated_at' (antes estava 'parcelas')
+  applyMigrationIfMissing(db, 'audit.sql', 'emprestimos', 'updated_at');
+
+  // ⬇️ NOVO: migração que cria valor_emprestado / valor_atual
+  applyMigrationIfMissing(db, 'valor_emprestado.sql', 'emprestimos', 'valor_emprestado');
+
+  applyMigrationIfMissing(db, 'renegociacoes_historico.sql', 'renegociacoes_historico', 'id');
 }
 
-/* ---------- criação de tabelas (idempotente) ---------- */
-db.serialize(() => {
+function ensureSchema(db) {
   db.run(`CREATE TABLE IF NOT EXISTS clientes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nome TEXT,
@@ -120,16 +101,22 @@ db.serialize(() => {
     criadoEm TEXT
   )`);
 
+  // 👇 ATUALIZADO: inclui valor_emprestado, valor_atual,
+  // e já deixa capital_restante / saldo_devedor para bancos novos
   db.run(`CREATE TABLE IF NOT EXISTS emprestimos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cliente_id INTEGER,
     codigo_cliente TEXT,
     valor REAL,
+    valor_emprestado REAL,
+    valor_atual REAL,
     data TEXT,
     modalidade TEXT,
     taxa_juros REAL,
     observacao TEXT,
-    dia_pagamento INTEGER
+    dia_pagamento INTEGER,
+    capital_restante REAL,
+    saldo_devedor REAL
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS parcelas (
@@ -177,9 +164,112 @@ db.serialize(() => {
     data_pagamento TEXT
   )`);
 
-  // agora aplicamos as migrações (de forma segura / idempotente)
-  aplicarMigracoes();
-});
+  applyMigrations(db);
+}
 
-module.exports = db;
-// ...existing code...
+function configureConnection(db) {
+  db.serialize(() => {
+    db.run('PRAGMA foreign_keys = ON;', (err) => {
+      if (err) {
+        log(`PRAGMA foreign_keys error: ${err.message}`);
+      } else {
+        log('PRAGMA foreign_keys=ON');
+      }
+    });
+
+    db.get('PRAGMA journal_mode = WAL;', (err, row) => {
+      if (err) {
+        log(`PRAGMA journal_mode=WAL error: ${err.message}`);
+      } else {
+        const mode = row && (row.journal_mode || row['journal_mode']);
+        log(`PRAGMA journal_mode=WAL -> ${mode || JSON.stringify(row) || 'unknown'}`);
+      }
+    });
+
+    ensureSchema(db);
+  });
+
+  log(`Database ready at ${getDbPath()}`);
+}
+
+function openConnection() {
+  if (currentDb) {
+    return currentDb;
+  }
+
+  const dbPath = getDbPath();
+  log(`Opening SQLite database at ${dbPath}`);
+
+  currentDb = new sqlite3.Database(
+    dbPath,
+    sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE,
+    (err) => {
+      if (err) {
+        log(`Failed to open database: ${err.message}`);
+      } else {
+        log('SQLite handle acquired');
+      }
+    }
+  );
+
+  configureConnection(currentDb);
+  return currentDb;
+}
+
+function getConnection() {
+  return openConnection();
+}
+
+function closeConnection() {
+  return new Promise((resolve, reject) => {
+    if (!currentDb) {
+      resolve();
+      return;
+    }
+
+    const dbToClose = currentDb;
+    dbToClose.close((err) => {
+      if (err) {
+        log(`Error closing SQLite: ${err.message}`);
+        reject(err);
+        return;
+      }
+      if (currentDb === dbToClose) {
+        currentDb = null;
+      }
+      log('SQLite connection closed');
+      resolve();
+    });
+  });
+}
+
+async function reopenConnection() {
+  await closeConnection();
+  openConnection();
+  return currentDb;
+}
+
+function getCurrentDbPath() {
+  return getDbPath();
+}
+
+openConnection();
+
+const dbProxy = new Proxy(
+  {},
+  {
+    get(_target, prop) {
+      if (prop === 'closeConnection') return closeConnection;
+      if (prop === 'reopenConnection') return reopenConnection;
+      if (prop === 'getConnection') return getConnection;
+      if (prop === 'getDbPath') return getCurrentDbPath;
+
+      const conn = getConnection();
+      const value = conn[prop];
+      if (typeof value === 'function') return value.bind(conn);
+      return value;
+    },
+  }
+);
+
+module.exports = dbProxy;
