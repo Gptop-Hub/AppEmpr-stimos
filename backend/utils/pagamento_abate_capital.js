@@ -20,7 +20,12 @@ module.exports = async function calcularAbateCapital({
 
   return new Promise((resolve, reject) => {
     db.all(
-      `SELECT * FROM parcelas WHERE emprestimo_id = ? ORDER BY numero ASC`,
+      `SELECT p.*
+         FROM parcelas p
+         JOIN emprestimos e ON e.id = p.emprestimo_id
+        WHERE p.emprestimo_id = ?
+          AND (p.versao IS NULL OR p.versao = e.versao_atual)
+        ORDER BY p.numero ASC`,
       [emprestimo_id],
       async (err, parcelas) => {
         if (err) {
@@ -95,7 +100,7 @@ module.exports = async function calcularAbateCapital({
             emprestimoId: emprestimo_id,
             novoCapital: novoCapitalTotal,
             novaQtdParcelas: qtdRestante,
-            novaTaxaJuros: atual.juros_adicionais || 0, // ou use taxa do empréstimo
+              novaTaxaJuros: atual.juros_pendentes || 0, // ou use taxa do empréstimo
             dataInicio: data,
             diaPagamento: atual.vencimento.split('-')[2] // extrai o dia do vencimento atual
           });

@@ -1,26 +1,65 @@
-// NovoEmprestimo.jsx
+﻿// NovoEmprestimo.jsx
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import notify from '../ui/notify';
+import { calcularPreviewParcelas, renderLinhaJuros } from './Emprestimos/helpers.jsx';
+import StepperInput from './common/StepperInput.jsx';
+import ClienteIdentity from './common/ClienteIdentity.jsx';
+
+const hojeLocalISO = () => {
+  const d = new Date();
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
+
+const parseLocalISO = (value) => {
+  if (!value || typeof value !== 'string') return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+};
+
+const normalizeSearchText = (value) =>
+  String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+const getMatchScore = (query, nomeCliente) => {
+  const q = normalizeSearchText(query);
+  const nome = normalizeSearchText(nomeCliente);
+
+  if (!q) return 3;
+  if (!nome) return -1;
+  if (nome.startsWith(q)) return 0;
+  if (nome.split(/\s+/).some((parte) => parte.startsWith(q))) return 1;
+  return -1;
+};
 
 export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSalvo, onCancelar }) {
+  const navigate = useNavigate();
   const [clientes, setClientes] = useState([]);
   const [modalidade, setModalidade] = useState('parcelado');
   const [clienteId, setClienteId] = useState(clienteIdInicial);
   const [valor, setValor] = useState('');
-  const [data, setData] = useState(new Date().toISOString().split('T')[0]); // data de início do empréstimo
+  const [data, setData] = useState(hojeLocalISO()); // data de inicio do emprestimo
   const [parcelas, setParcelas] = useState('5');
   const [taxaJuros, setTaxaJuros] = useState('10');
   const [observacao, setObservacao] = useState('');
-  const [dataPagamento, setDataPagamento] = useState(''); // data de vencimento da 1ª parcela (base das próximas)
+  const [dataPagamento, setDataPagamento] = useState(''); // data de vencimento da 1a parcela (base das proximas)
 
   const [buscaCliente, setBuscaCliente] = useState('');
+  const [buscaClienteId, setBuscaClienteId] = useState('');
   const [mostrarListaClientes, setMostrarListaClientes] = useState(false);
 
   useEffect(() => {
     axios
-      .get('http://localhost:3001/clientes')
-      .then((res) => setClientes(res.data || []))
+      .get('/clientes')
+      .then((res) => setClientes(Array.isArray(res.data) ? res.data : []))
       .catch((err) => console.error('Erro ao carregar clientes:', err));
   }, []);
 
@@ -29,7 +68,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
     if (clienteIdInicial) {
       const clienteSelecionado = clientes.find((c) => c.id === clienteIdInicial);
       if (clienteSelecionado) {
-        setBuscaCliente(`#${clienteSelecionado.id} – ${clienteSelecionado.nome}`);
+        setBuscaCliente(`#${clienteSelecionado.id} - ${clienteSelecionado.nome}`);
       }
     }
   }, [clienteIdInicial, clientes]);
@@ -44,117 +83,50 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
   const formatarMoedaNumero = (num) =>
     Number(num || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-  // --- helpers de data -------------------------------------------------------
+  const previewParcelas = calcularPreviewParcelas({
+    total: desformatarMoeda(valor),
+    parcelas,
+    taxaPercent: parseFloat(String(taxaJuros || '0').replace(',', '.')),
+    primeiroVencimento: dataPagamento,
+  });
 
-  // ajusta dia para último dia do mês válido
-  const ajustarData = (ano, mes, diaEscolhido) => {
-    const ultimoDia = new Date(ano, mes + 1, 0).getDate();
-    const diaFinal = Math.min(diaEscolhido, ultimoDia);
-    return new Date(ano, mes, diaFinal);
-  };
+  const clientesFiltrados = (() => {
+    const termoRaw = String(buscaCliente || '').trim();
+    const clientesPorId = buscaClienteId
+      ? clientes.filter((c) => String(c.id).startsWith(buscaClienteId))
+      : clientes;
+    if (!termoRaw) return [...clientesPorId].sort((a, b) => Number(a.id) - Number(b.id));
 
-  // soma meses mantendo o dia; se não existir, usa último dia do mês
-  function addMonthsAdjust(date, months) {
-    const d = new Date(date.getTime());
-    const targetMonth = d.getMonth() + months;
-    const y = d.getFullYear() + Math.floor(targetMonth / 12);
-    const m = ((targetMonth % 12) + 12) % 12;
-    const day = d.getDate();
-    const lastDay = new Date(y, m + 1, 0).getDate();
-    return new Date(y, m, Math.min(day, lastDay));
-  }
-
-  /**
-   * calcularPreviewParcelas
-   * Regra:
-   *  - Se `dataPagamento` for válida: 1º vencimento = essa data (dia/mês/ano).
-   *    As seguintes = +1 mês sucessivamente (ajustando dia quando necessário).
-   *  - Se `dataPagamento` estiver vazia: mostra placeholder "dd mm aaaa".
-   *  - `data` (início do empréstimo) é apenas informativa aqui.
-   */
-  const calcularPreviewParcelas = () => {
-    const total = desformatarMoeda(valor);
-    const taxa = parseFloat(String(taxaJuros || '0').replace(',', '.')) / 100;
-    const m = parseInt(parcelas || '0', 10);
-
-    if (!m || m <= 0 || total <= 0) return [];
-
-    let saldo = total;
-    const preview = [];
-
-    // 1º vencimento (quando informado)
-    let firstDue = null;
-    if (dataPagamento) {
-      const dp = new Date(dataPagamento);
-      if (!isNaN(dp.getTime())) firstDue = dp;
-    }
-
-    for (let i = 1; i <= m; i++) {
-      const amort = m > 0 ? total / m : 0;
-      const jurosVal = saldo * taxa;
-      const valorParc = amort + jurosVal;
-
-      let vencFormatado;
-      if (!firstDue) {
-        vencFormatado = 'dd mm aaaa';
-      } else {
-        const venc = i === 1 ? firstDue : addMonthsAdjust(firstDue, i - 1);
-        vencFormatado = `${('0' + venc.getDate()).slice(-2)}/${('0' + (venc.getMonth() + 1)).slice(
-          -2
-        )}/${venc.getFullYear()}`;
-      }
-
-      preview.push({
-        numero: i,
-        amortizacao: isNaN(amort) ? 0 : amort,
-        juros: isNaN(jurosVal) ? 0 : jurosVal,
-        total: isNaN(valorParc) ? 0 : valorParc,
-        vencimento: vencFormatado,
-      });
-
-      saldo -= amort;
-    }
-    return preview;
-  };
-
-  const clientesFiltrados = clientes
-    .filter((c) => {
-      const termo = buscaCliente.trim().toLowerCase();
-      if (!termo) return true;
-
-      const numBusca = Number(termo.replace(/\D/g, ''));
-      if (!isNaN(numBusca) && termo === numBusca.toString()) {
-        return c.id.toString().startsWith(numBusca.toString());
-      }
-
-      return c.nome.toLowerCase().includes(termo);
-    })
-    .sort((a, b) => {
-      const termo = buscaCliente.trim().toLowerCase();
-      const numBusca = Number(termo.replace(/\D/g, ''));
-      if (!isNaN(numBusca) && termo === numBusca.toString()) {
-        return a.id - b.id;
-      }
-      return a.nome.localeCompare(b.nome);
-    });
+    return clientesPorId
+      .map((c) => ({
+        cliente: c,
+        score: getMatchScore(termoRaw, c.nome),
+      }))
+      .filter((item) => item.score >= 0)
+      .sort((a, b) => {
+        if (a.score !== b.score) return a.score - b.score;
+        return a.cliente.nome.localeCompare(b.cliente.nome, 'pt-BR');
+      })
+      .map((item) => item.cliente);
+  })();
 
   const dataPaymentIsValid = () => {
     if (!dataPagamento) return false;
-    const d = new Date(dataPagamento);
-    return !isNaN(d.getTime());
+    const d = parseLocalISO(dataPagamento);
+    return !!(d && !isNaN(d.getTime()));
   };
 
   const registrarEmprestimo = async () => {
     const valorNumerico = desformatarMoeda(valor);
 
-    // validações específicas (mensagens claras)
+    // validacoes especificas (mensagens claras)
     if (!clienteId) {
-      notify.warn('Selecione um cliente antes de registrar o empréstimo.');
+      notify.warn('Selecione um cliente antes de registrar o empr\u00e9stimo.');
       return;
     }
 
     if (!valorNumerico || valorNumerico <= 0) {
-      notify.warn('Informe um valor válido para o empréstimo.');
+      notify.warn('Informe um valor v\u00e1lido para o empr\u00e9stimo.');
       return;
     }
 
@@ -163,31 +135,31 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
       return;
     }
 
-    // validação genérica para os demais campos obrigatórios
+    // validacao generica para os demais campos obrigatorios
     if (
       !data ||
       !taxaJuros ||
       (modalidade === 'parcelado' && (!parcelas || Number(parcelas) <= 0))
     ) {
-      notify.warn('Preencha todos os campos obrigatórios!');
+      notify.warn('Preencha todos os campos obrigat\u00f3rios!');
       return;
     }
 
-    // validação: data de vencimento não pode ser antes do início do empréstimo
+    // validacao: data de vencimento nao pode ser antes do inicio do emprestimo
     if (dataPaymentIsValid()) {
-      const dEmp = new Date(data);
-      const dPay = new Date(dataPagamento);
-      if (dPay.getTime() < dEmp.getTime()) {
-        notify.warn('A data de vencimento não pode ser anterior à data de início do empréstimo.');
+      const dEmp = parseLocalISO(data);
+      const dPay = parseLocalISO(dataPagamento);
+      if (dEmp && dPay && dPay.getTime() < dEmp.getTime()) {
+        notify.warn('A data de vencimento n\u00e3o pode ser anterior \u00e0 data de in\u00edcio do empr\u00e9stimo.');
         return;
       }
     }
 
     try {
-      const res = await axios.post('http://localhost:3001/emprestimos', {
+      const res = await axios.post('/emprestimos', {
         cliente_id: clienteId,
         valor: valorNumerico,
-        data, // início do empréstimo (informativo)
+        data, // inicio do emprestimo (informativo)
         modalidade,
         parcelas: modalidade === 'parcelado' ? parseInt(parcelas, 10) : null,
         taxa_juros: parseFloat(String(taxaJuros).replace(',', '.')),
@@ -200,7 +172,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
       setClienteId('');
       setBuscaCliente('');
       setValor('');
-      setData(new Date().toISOString().split('T')[0]);
+      setData(hojeLocalISO());
       setParcelas('5');
       setTaxaJuros('10');
       setObservacao('');
@@ -221,27 +193,33 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
   // ---------- ESTILOS VISUAIS (apenas layout/visual) -------------------------
 
   const containerStyle = {
-    maxWidth: 560,
+    padding: 20,
+    maxWidth: 'min(980px, var(--main-max-effective, var(--main-max)))',
     margin: '0 auto',
-    padding: 24,
-    background: 'var(--bg-card)',
+    fontFamily: 'sans-serif',
     color: 'var(--text-main)',
+  };
+
+  const cardStyle = {
+    background: 'var(--bg-card)',
+    borderRadius: 8,
     border: '1px solid var(--border-soft)',
-    borderRadius: 12,
-    boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
+    padding: 20,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
   };
 
   const sectionStyle = {
-    marginTop: 18,
+    marginBottom: 20,
+    paddingBottom: 14,
+    borderBottom: '1px solid var(--border-soft)',
   };
 
   const sectionTitleStyle = {
-    fontSize: 12,
+    marginTop: 0,
+    marginBottom: 10,
+    fontSize: 14,
     fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: '0.06em',
-    marginBottom: 8,
-    color: 'var(--text-muted)',
+    color: 'var(--text-main)',
     display: 'flex',
     alignItems: 'center',
     gap: 6,
@@ -253,20 +231,19 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
 
   const fieldStyle = {
     width: '100%',
-    padding: '9px 11px',
-    borderRadius: 8,
+    padding: 8,
+    borderRadius: 4,
     border: '1px solid var(--border-soft)',
-    background: 'var(--bg-card)',
+    background: 'var(--bg-body)',
     color: 'var(--text-main)',
-    fontSize: 14,
+    boxSizing: 'border-box',
   };
 
   const labelStyle = {
     display: 'block',
     marginBottom: 4,
-    fontSize: 12,
-    fontWeight: 500,
-    color: 'var(--text-muted)',
+    fontSize: 14,
+    color: 'var(--text-main)',
   };
 
   const smallHelpText = {
@@ -284,22 +261,57 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
     color: 'var(--text-main)',
   };
 
+  const primaryButtonStyle = {
+    marginTop: 16,
+    width: '100%',
+    padding: '10px 14px',
+    borderRadius: 6,
+    border: 'none',
+    background: '#22c55e',
+    color: '#fff',
+    fontWeight: 600,
+    cursor: 'pointer',
+  };
+
+  const backButtonStyle = {
+    padding: '8px 12px',
+    borderRadius: 6,
+    border: '1px solid var(--border-soft)',
+    background: 'var(--bg-body)',
+    color: 'var(--text-main)',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 13,
+  };
+
+  const voltarTelaOrigem = () => {
+    if (onCancelar) {
+      onCancelar();
+      return;
+    }
+    navigate('/emprestimos');
+  };
+
   return (
     <div style={containerStyle}>
-      {/* Cabeçalho */}
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-main)' }}>
-          📄 Novo Empréstimo
+      <div style={cardStyle}>
+        <div style={{ marginBottom: 10 }}>
+          <button
+            type="button"
+            onClick={voltarTelaOrigem}
+            style={backButtonStyle}
+          >
+            ← Voltar para Empréstimos
+          </button>
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-          Preencha os dados do cliente, configure o valor e as parcelas antes de registrar.
-        </div>
-      </div>
+        <h2 style={{ textAlign: 'center', marginTop: 0, marginBottom: 20 }}>
+          {'\u{1F4C4} Novo Empr\u00e9stimo'}
+        </h2>
 
       {/* Modalidade + Cliente */}
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>
-          <span>👤 Cliente & Modalidade</span>
+          <span>{'\u{1F464} Cliente & Modalidade'}</span>
         </div>
 
         <div style={fieldWrapperStyle}>
@@ -313,35 +325,58 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
               />
               Parcelado
             </label>
-            <label style={radioLabelStyle}>
-              <input
-                type="radio"
-                checked={modalidade === 'aberto'}
-                onChange={() => setModalidade('aberto')}
-              />
-              Em aberto
-            </label>
           </div>
         </div>
 
         <div style={fieldWrapperStyle}>
           <label style={labelStyle}>Cliente</label>
-          <input
-            type="text"
-            placeholder="Busque por nome ou ID"
-            value={buscaCliente}
-            onChange={(e) => {
-              const valor = e.target.value;
-              setBuscaCliente(valor);
-              setClienteId('');
-              setMostrarListaClientes(valor.trim().length > 0);
-            }}
-            onFocus={() => {
-              if (buscaCliente.trim().length > 0) setMostrarListaClientes(true);
-            }}
-            onBlur={() => setTimeout(() => setMostrarListaClientes(false), 200)}
-            style={fieldStyle}
-          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="ID"
+              aria-label="Buscar cliente por ID"
+              value={buscaClienteId}
+              onChange={(e) => {
+                const valor = e.target.value.replace(/\D/g, '');
+                setBuscaClienteId(valor);
+                setClienteId('');
+                setMostrarListaClientes(valor.length > 0 || buscaCliente.trim().length > 0);
+              }}
+              onFocus={() => {
+                if (buscaClienteId || buscaCliente.trim()) setMostrarListaClientes(true);
+              }}
+              onBlur={() => setTimeout(() => setMostrarListaClientes(false), 200)}
+              style={{ ...fieldStyle, width: 82, flex: '0 0 82px' }}
+            />
+            <input
+              type="text"
+              placeholder="Busque por nome"
+              value={buscaCliente}
+              onChange={(e) => {
+                const valor = e.target.value;
+                setBuscaCliente(valor);
+                setClienteId('');
+                setMostrarListaClientes(valor.trim().length > 0 || buscaClienteId.length > 0);
+              }}
+              onFocus={() => {
+                if (buscaCliente.trim() || buscaClienteId) setMostrarListaClientes(true);
+              }}
+              onBlur={() => setTimeout(() => setMostrarListaClientes(false), 200)}
+              style={{ ...fieldStyle, flex: 1 }}
+            />
+          </div>
+
+          {clienteId ? (
+            <div className="cliente-selection-preview">
+              <ClienteIdentity
+                cliente={clientes.find((cliente) => Number(cliente.id) === Number(clienteId))}
+                clienteId={clienteId}
+                avatarSize={40}
+                secondary={`ID ${clienteId}`}
+              />
+            </div>
+          ) : null}
 
           {mostrarListaClientes && (
             <ul
@@ -366,7 +401,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
                     key={c.id}
                     onMouseDown={() => {
                       setClienteId(c.id);
-                      setBuscaCliente(`#${c.id} – ${c.nome}`);
+                      setBuscaCliente(`#${c.id} - ${c.nome}`);
                       setMostrarListaClientes(false);
                     }}
                     style={{
@@ -375,7 +410,11 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
                       borderBottom: '1px solid var(--border-soft)',
                     }}
                   >
-                    #{c.id} – {c.nome}
+                    <ClienteIdentity
+                      cliente={c}
+                      avatarSize={34}
+                      secondary={`ID ${c.id}`}
+                    />
                   </li>
                 ))
               ) : (
@@ -388,10 +427,10 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
         </div>
       </div>
 
-      {/* Dados principais do empréstimo */}
+      {/* Dados principais do emprestimo */}
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>
-          <span>💰 Dados do empréstimo</span>
+          <span>{'\u{1F4B0} Dados do empr\u00e9stimo'}</span>
         </div>
 
         <div style={fieldWrapperStyle}>
@@ -405,7 +444,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
         </div>
 
         <div style={fieldWrapperStyle}>
-          <label style={labelStyle}>Data de Início do Empréstimo</label>
+          <label style={labelStyle}>{'Data de In\u00edcio do Empr\u00e9stimo'}</label>
           <input
             type="date"
             value={data}
@@ -415,7 +454,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
         </div>
 
         <div style={fieldWrapperStyle}>
-          <label style={labelStyle}>Observação</label>
+          <label style={labelStyle}>{'Observa\u00e7\u00e3o'}</label>
           <input
             type="text"
             value={observacao}
@@ -426,29 +465,20 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
         </div>
       </div>
 
-      {/* Configuração de parcelas / juros */}
+      {/* Configuracao de parcelas / juros */}
       {modalidade === 'parcelado' && (
         <div style={sectionStyle}>
           <div style={sectionTitleStyle}>
-            <span>📑 Configuração das parcelas</span>
+            <span>{'\u{1F4D1} Configura\u00e7\u00e3o das parcelas'}</span>
           </div>
 
           <div style={fieldWrapperStyle}>
             <label style={labelStyle}>Parcelas</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="\d*"
+            <StepperInput
               value={parcelas}
-              onChange={(e) => {
-                const raw = e.target.value.replace(/\D/g, '');
-                const normalized = raw === '' ? '' : String(Number(raw));
-                setParcelas(normalized);
-              }}
-              onBlur={() => {
-                if (parcelas === '' || Number(parcelas) < 1) setParcelas('1');
-              }}
-              style={fieldStyle}
+              onChange={setParcelas}
+              min={1}
+              inputAriaLabel="Quantidade de parcelas"
             />
           </div>
 
@@ -474,17 +504,17 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
               onChange={(e) => setDataPagamento(e.target.value)}
               style={fieldStyle}
             />
-            <div style={smallHelpText}>
-              Essa será a data da 1ª parcela. As demais seguem mês a mês a partir dela.
-            </div>
+          <div style={smallHelpText}>
+            {'Essa ser\u00e1 a data da 1\u00aa parcela. As demais seguem m\u00eas a m\u00eas a partir dela.'}
+          </div>
           </div>
 
           <div style={{ marginTop: 18 }}>
-            <div style={sectionTitleStyle}>
-              <span>📆 Pré-visualização de parcelas</span>
-            </div>
+          <div style={sectionTitleStyle}>
+            <span>{'\u{1F4C6} Pr\u00e9-visualiza\u00e7\u00e3o de parcelas'}</span>
+          </div>
             <ul style={{ listStyle: 'none', padding: 0, marginTop: 6 }}>
-              {calcularPreviewParcelas().map((p) => (
+              {previewParcelas.map((p) => (
                 <li
                   key={p.numero}
                   style={{
@@ -498,21 +528,29 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
                   }}
                 >
                   <div style={{ fontWeight: 600 }}>
-                    {p.numero}ª parcela – {formatarMoedaNumero(p.total)}
+                    {p.numero}
+                    {'\u00aa'} parcela - {formatarMoedaNumero(p.total)}
                   </div>
                   <div style={{ color: 'var(--text-muted)', marginTop: 2 }}>
-                    Capital: {formatarMoedaNumero(p.amortizacao)} · Juros:{' '}
-                    {formatarMoedaNumero(p.juros)}
+                    {renderLinhaJuros(
+                      {
+                        valor_capital: p.amortizacao,
+                        valor_juros: p.juros,
+                        juros_pendentes: 0,
+                        juros_adicionais: 0,
+                      },
+                      formatarMoedaNumero
+                    )}
                   </div>
                   <div style={{ marginTop: 2 }}>
                     <strong>Vencimento: {p.vencimento}</strong>
                   </div>
                 </li>
               ))}
-              {calcularPreviewParcelas().length === 0 && (
+              {previewParcelas.length === 0 && (
                 <li style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   Informe valor, parcelas, taxa de juros e data de vencimento para ver a
-                  simulação.
+                  {'simula\u00e7\u00e3o.'}
                 </li>
               )}
             </ul>
@@ -523,7 +561,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
       {modalidade === 'aberto' && (
         <div style={sectionStyle}>
           <div style={sectionTitleStyle}>
-            <span>📑 Juros para empréstimo em aberto</span>
+            <span>{'\u{1F4D1} Juros para empr\u00e9stimo em aberto'}</span>
           </div>
 
           <div style={fieldWrapperStyle}>
@@ -539,29 +577,16 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
               style={fieldStyle}
             />
             <p style={smallHelpText}>
-              Após salvar, utilize a aba de pagamentos para registrar valores livres.
+            {'Ap\u00f3s salvar, utilize a aba de pagamentos para registrar valores livres.'}
             </p>
           </div>
         </div>
       )}
 
-      {/* Botões */}
-      <div style={{ marginTop: 24 }}>
-        <button
-          onClick={registrarEmprestimo}
-          style={{
-            width: '100%',
-            padding: 11,
-            background: '#22c55e',
-            color: '#fff',
-            border: 'none',
-            borderRadius: 999,
-            cursor: 'pointer',
-            fontWeight: 600,
-            fontSize: 14,
-          }}
-        >
-          Registrar empréstimo
+      {/* Botoes */}
+      <div style={{ marginTop: 20 }}>
+        <button onClick={registrarEmprestimo} style={primaryButtonStyle}>
+          {'Registrar empr\u00e9stimo'}
         </button>
 
         {onCancelar && (
@@ -574,7 +599,7 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
               backgroundColor: '#ef4444',
               color: 'white',
               border: 'none',
-              borderRadius: 999,
+              borderRadius: 6,
               cursor: 'pointer',
               fontSize: 13,
               fontWeight: 500,
@@ -584,6 +609,8 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
           </button>
         )}
       </div>
+      </div>
     </div>
   );
 }
+

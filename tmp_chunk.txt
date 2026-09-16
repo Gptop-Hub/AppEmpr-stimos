@@ -1,0 +1,12 @@
+                     borderRadius: 4,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {openAtivasByLoan[emp.id]
+                                ? "🔽 Ocultar parcelas"
+                                : "📄 Mostrar parcelas"}
+                            </button>
+
+                            {showRenegButton && (
+                              <button
+    

@@ -1,4 +1,4 @@
-const { db, toNumberSafe } = require('./core');
+﻿const { db, toNumberSafe } = require('./core');
 const { toISO } = require('../dateUtils');
 const gerarParcelas = require('../../utils/gerarParcelas');
 
@@ -16,17 +16,43 @@ exports.atualizarEmprestimo = (id, dados) => {
     } = dados;
 
     if (!cliente_id || !valor || !data || !modalidade || taxa_juros === undefined) {
-      return reject(new Error('Campos obrigatórios ausentes.'));
+      return reject(new Error('Campos obrigatorios ausentes.'));
     }
 
-    db.run(
-      `UPDATE emprestimos SET
-         cliente_id = ?, valor = ?, data = ?, modalidade = ?, taxa_juros = ?, observacao = ?, dia_pagamento = ?
-       WHERE id = ?`,
-      [cliente_id, valor, data, modalidade, taxa_juros, observacao, dia_pagamento, id],
-      function (err) {
-        if (err) return reject(err);
-        resolve({ mensagem: 'Empréstimo atualizado com sucesso!' });
+    const emprestimoId = Number(id);
+    if (!Number.isFinite(emprestimoId) || emprestimoId <= 0) {
+      return reject(new Error('ID de emprestimo invalido.'));
+    }
+
+    db.get(
+      `SELECT COUNT(1) AS total
+         FROM parcelas
+        WHERE emprestimo_id = ?
+          AND (
+            COALESCE(pago, 0) = 1
+            OR COALESCE(valor_pago, 0) > 0
+          )`,
+      [emprestimoId],
+      (checkErr, row) => {
+        if (checkErr) return reject(checkErr);
+
+        const totalPagas = Number((row && row.total) || 0);
+        if (totalPagas > 0) {
+          const blocked = new Error('Emprestimo com parcela paga nao pode ser editado.');
+          blocked.code = 'LOAN_EDIT_BLOCKED_AFTER_PAYMENT';
+          return reject(blocked);
+        }
+
+        db.run(
+          `UPDATE emprestimos SET
+             cliente_id = ?, valor = ?, data = ?, modalidade = ?, taxa_juros = ?, observacao = ?, dia_pagamento = ?
+           WHERE id = ?`,
+          [cliente_id, valor, data, modalidade, taxa_juros, observacao, dia_pagamento, emprestimoId],
+          function (err) {
+            if (err) return reject(err);
+            resolve({ mensagem: 'Emprestimo atualizado com sucesso!' });
+          }
+        );
       }
     );
   });
@@ -61,11 +87,11 @@ exports.criarEmprestimo = (dados) => {
       taxa_juros === undefined ||
       dia_pagamento === undefined
     ) {
-      return reject(new Error('Campos obrigatórios ausentes.'));
+      return reject(new Error('Campos obrigatÃ³rios ausentes.'));
     }
 
     const dataCriacao = toISO(data) ? new Date(toISO(data)) : null;
-    if (!dataCriacao) return reject(new Error('Data inválida'));
+    if (!dataCriacao) return reject(new Error('Data invÃ¡lida'));
 
     db.get(
       'SELECT COUNT(*) AS total FROM emprestimos WHERE cliente_id = ?',
@@ -112,8 +138,8 @@ exports.criarEmprestimo = (dados) => {
 
                 const stmt = db.prepare(
                   `INSERT INTO parcelas
-                     (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, observacao, valor_pago, data_pagamento, juros_adicionais)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                     (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, observacao, valor_pago, data_pagamento, juros_adicionais, juros_pendentes, versao)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 );
 
                 const stmtOriginais = db.prepare(
@@ -135,7 +161,9 @@ exports.criarEmprestimo = (dados) => {
                     '',
                     null,
                     null,
-                    0
+                    0,
+                    0,
+                    1
                   );
 
                   stmtOriginais.run(
@@ -170,7 +198,7 @@ exports.atualizarParcelaVencimento = (parcelaId, vencimento) => {
   return new Promise((resolve, reject) => {
     const vencISO = toISO(vencimento);
     if (!vencISO) {
-      return reject(new Error('Data de vencimento inválida'));
+      return reject(new Error('Data de vencimento invÃ¡lida'));
     }
 
     db.run(
@@ -189,7 +217,7 @@ exports.atualizarParcelaVencimento = (parcelaId, vencimento) => {
 
 exports.excluirEmprestimo = (id) => {
   return new Promise((resolve, reject) => {
-    if (!id) return reject(new Error('ID inválido'));
+    if (!id) return reject(new Error('ID invÃ¡lido'));
 
     db.serialize(() => {
       db.run('BEGIN TRANSACTION', (errBegin) => {
@@ -227,7 +255,7 @@ exports.excluirEmprestimo = (id) => {
                       db.run('ROLLBACK', () => {});
                       return reject(errCommit);
                     }
-                    resolve({ mensagem: `Empréstimo ${id} excluído com sucesso.` });
+                    resolve({ mensagem: `EmprÃ©stimo ${id} excluÃ­do com sucesso.` });
                   });
                 });
               });
@@ -238,3 +266,4 @@ exports.excluirEmprestimo = (id) => {
     });
   });
 };
+

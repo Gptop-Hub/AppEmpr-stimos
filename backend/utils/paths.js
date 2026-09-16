@@ -37,7 +37,7 @@ function ensureDirSync(dir) {
 }
 
 let _computed = false;
-let _appDataDir, _dataDir, _backupsDir, _uploadsDir, _logsDir;
+let _appDataDir, _dataDir, _backupsDir, _uploadsDir, _clientPhotosDir, _logsDir;
 
 function migrateLegacy(appDataDir) {
   const parent = path.dirname(appDataDir);
@@ -50,6 +50,11 @@ function migrateLegacy(appDataDir) {
 
   const targetData = ensureDirSync(path.join(appDataDir, 'emprestimos-data'));
   const targetDb   = path.join(targetData, 'database.db');
+
+  if (fs.existsSync(targetDb)) {
+    console.warn('[paths] MigraÃ§Ã£o legado ignorada: target jÃ¡ existe:', targetDb);
+    return;
+  }
 
   if (fs.existsSync(legacyDb)) {
     try {
@@ -81,6 +86,7 @@ function compute() {
 
   _backupsDir = ensureDirSync(path.join(_dataDir, 'backups'));
   _uploadsDir = ensureDirSync(path.join(_dataDir, 'uploads'));
+  _clientPhotosDir = ensureDirSync(path.join(_uploadsDir, 'client-photos'));
   _logsDir    = ensureDirSync(path.join(_appDataDir, 'logs'));
 
   console.info('[paths] db dir =', _dataDir);
@@ -92,12 +98,14 @@ function compute() {
 function getAppDataDir(){ compute(); return _appDataDir; }
 function getDataDir(){ compute(); return _dataDir; }
 function getDbPath(){ compute(); return path.join(_dataDir, 'database.db'); }
+function getSecurityDbPath(){ compute(); return path.join(_dataDir, 'seguranca.db'); }
 function getBackupsDir(){ compute(); return _backupsDir; }
 function getUploadsDir(){ compute(); return _uploadsDir; }
+function getClientPhotosDir(){ compute(); return _clientPhotosDir; }
 function getLogsDir(){ compute(); return _logsDir; }
 
 module.exports = {
   sanitizePath, ensureDirSync,
-  getAppDataDir, getDataDir, getDbPath,
-  getBackupsDir, getUploadsDir, getLogsDir,
+  getAppDataDir, getDataDir, getDbPath, getSecurityDbPath,
+  getBackupsDir, getUploadsDir, getClientPhotosDir, getLogsDir,
 };

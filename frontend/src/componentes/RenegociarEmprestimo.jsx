@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react'; 
 import axios from 'axios';
 import { formatarMoedaNumero, desformatarMoeda } from '../utils/formatacao';
+import { renderLinhaJuros } from './Emprestimos/helpers.jsx';
 import notify from '../ui/notify';
+import StepperInput from './common/StepperInput.jsx';
 
 export default function RenegociarEmprestimo({ 
   emprestimoId,
@@ -60,7 +62,7 @@ export default function RenegociarEmprestimo({
 
     console.log('Enviando renegociação:', dadosParaSalvar);
 
-    axios.post('http://localhost:3001/renegociar', dadosParaSalvar)
+    axios.post('/renegociar', dadosParaSalvar)
       .then(() => {
         notify.success('Renegociacao concluida.');
         if (onRenegociado) onRenegociado();
@@ -82,7 +84,7 @@ export default function RenegociarEmprestimo({
       boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
       fontFamily: 'Arial, sans-serif'
     }}>
-      <h2 style={{ marginBottom: '20px' }}>📄 Renegociar Empréstimo (ID: {emprestimoId})</h2>
+      <h2 style={{ marginBottom: '20px' }}>Renegociar Empréstimo (ID: {emprestimoId})</h2>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <label>
@@ -97,12 +99,12 @@ export default function RenegociarEmprestimo({
 
         <label>
           Parcelas
-          <input
-            type="number"
+          <StepperInput
             value={parcelas}
+            onChange={setParcelas}
             min={1}
-            onChange={(e) => setParcelas(Number(e.target.value) || 1)}
-            style={inputStyle}
+            inputAriaLabel="Quantidade de parcelas"
+            style={{ marginTop: 4 }}
           />
         </label>
 
@@ -170,7 +172,19 @@ export default function RenegociarEmprestimo({
             {parcelasPreview.map(p => (
               <li key={p.numero} style={{ marginBottom: '8px', fontSize: '14px' }}>
                 <strong>{p.numero}ª:</strong> R$ {p.valor.toFixed(2)} <br />
-                <small>(Capital: R$ {p.capital.toFixed(2)}, Juros: R$ {p.juros.toFixed(2)})</small>
+                <small>
+                  (
+                  {renderLinhaJuros(
+                    {
+                      valor_capital: p.capital,
+                      valor_juros: p.juros,
+                      juros_pendentes: 0,
+                      juros_adicionais: 0,
+                    },
+                    formatarMoedaNumero
+                  )}
+                  )
+                </small>
               </li>
             ))}
           </ul>
@@ -184,10 +198,10 @@ export default function RenegociarEmprestimo({
         gap: '12px'
       }}>
         <button onClick={salvarRenegociacao} style={buttonStyleGreen}>
-          💾 Salvar
+          Salvar
         </button>
         <button onClick={onClose} style={buttonStyleRed}>
-          ❌ Cancelar
+          Cancelar
         </button>
       </div>
     </div>

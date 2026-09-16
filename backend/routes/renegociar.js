@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { renegociarEmprestimo } = require('../utils/renegociar');
+const { touchAtividade } = require('../utils/touchAtividade');
 
 router.post('/', async (req, res) => {
   try {
@@ -29,6 +30,11 @@ router.post('/', async (req, res) => {
       observacao // se você quiser usar depois
     });
 
+    try {
+      await touchAtividade({ emprestimoId: emprestimo_id });
+    } catch (touchErr) {
+      console.error('[touchAtividade] renegociar-route:', touchErr);
+    }
     res.json(resultado);
   } catch (error) {
     console.error('Erro na rota renegociar:', error);

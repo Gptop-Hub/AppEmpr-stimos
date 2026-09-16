@@ -1,4 +1,7 @@
 import React from 'react';
+import StepperInput from '../common/StepperInput.jsx';
+import ClienteIdentity from '../common/ClienteIdentity.jsx';
+import useClientesCatalogo from '../common/useClientesCatalogo.js';
 
 export default function FormRenegociacao({
   clienteNome,
@@ -20,21 +23,20 @@ export default function FormRenegociacao({
   novoVencimento,
   setNovoVencimento,
 }) {
+  const { resolverCliente } = useClientesCatalogo();
   return (
     <>
       <div style={{ marginBottom: 6 }}>
         <div className="text-xs mb-1" style={labelMutedStyle}>
           Cliente (fixo)
         </div>
-        <input
-          type="text"
-          value={`#${getCodigoEmprestimo(emprestimo)} — ${
-            clienteNome || 'Cliente'
-          }`}
-          readOnly
-          className="w-full border rounded-md px-3 py-2"
-          style={inputStyle}
-        />
+        <div className="cliente-selection-preview">
+          <ClienteIdentity
+            cliente={resolverCliente(emprestimo?.cliente_id, clienteNome)}
+            avatarSize={40}
+            secondary={`Empréstimo #${getCodigoEmprestimo(emprestimo)}`}
+          />
+        </div>
       </div>
 
       {/* Esses campos somem no modo juros parcial */}
@@ -69,18 +71,12 @@ export default function FormRenegociacao({
             <div className="text-xs mb-1" style={labelMutedStyle}>
               Parcelas
             </div>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="\d*"
+            <StepperInput
               value={novoParcelas}
-              onChange={(e) => {
-                const raw = e.target.value.replace(/\D/g, '');
-                setNovoParcelas(raw);
-              }}
-              className="w-full border rounded-md px-3 py-2"
-              style={inputStyle}
-              placeholder="1"
+              onChange={setNovoParcelas}
+              min={1}
+              inputAriaLabel="Quantidade de parcelas"
+              style={{ width: '100%' }}
             />
           </div>
 
@@ -115,34 +111,36 @@ export default function FormRenegociacao({
         </>
       )}
 
-      {/* Datas: aparecem SEMPRE, mesmo em juros parcial */}
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="text-xs mb-1" style={labelMutedStyle}>
-            Data de início (original)
+      {/* Datas: agora também somem no modo juros parcial */}
+      {!isJurosParcialPreview && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-xs mb-1" style={labelMutedStyle}>
+              Data de início (original)
+            </div>
+            <input
+              type="date"
+              value={(emprestimo.data || '').slice(0, 10)}
+              readOnly
+              className="w-full border rounded-md px-3 py-2"
+              style={inputStyle}
+            />
           </div>
-          <input
-            type="date"
-            value={(emprestimo.data || '').slice(0, 10)}
-            readOnly
-            className="w-full border rounded-md px-3 py-2"
-            style={inputStyle}
-          />
-        </div>
 
-        <div>
-          <div className="text-xs mb-1" style={labelMutedStyle}>
-            1º Vencimento
+          <div>
+            <div className="text-xs mb-1" style={labelMutedStyle}>
+              1º Vencimento
+            </div>
+            <input
+              type="date"
+              value={novoVencimento}
+              onChange={(e) => setNovoVencimento(e.target.value)}
+              className="w-full border rounded-md px-3 py-2"
+              style={inputStyle}
+            />
           </div>
-          <input
-            type="date"
-            value={novoVencimento}
-            onChange={(e) => setNovoVencimento(e.target.value)}
-            className="w-full border rounded-md px-3 py-2"
-            style={inputStyle}
-          />
         </div>
-      </div>
+      )}
     </>
   );
 }

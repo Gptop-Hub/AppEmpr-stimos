@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const { PROTECOES } = require('../../backend/services/segurancaService.js');
+test('interface renderiza os oito itens, switches ON/OFF e os formulários corretos', async t => {
+  const vite = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, watch: null, hmr: false }, appType: 'custom' });
+  t.after(() => vite.close());
+  const { default: Item } = await vite.ssrLoadModule('/src/security/ProtecaoItem.jsx');
+  const items = PROTECOES.map(([chave,nome], i) => ({ chave, nome, ativo: i % 2 === 0, temSenha: true }));
+  const render = props => renderToStaticMarkup(React.createElement(Item, props));
+  const html = renderToStaticMarkup(React.createElement(React.Fragment, null, ...items.map(item => React.createElement(Item, { key: item.chave, item }))));
+  assert.equal((html.match(/class="seguranca-item"/g) || []).length, 8);
+  assert.equal((html.match(/role="switch"/g) || []).length, 8);
+  assert.equal((html.match(/aria-checked="true"/g) || []).length, 4);
+  assert.equal((html.match(/aria-checked="false"/g) || []).length, 4);
+  for (const item of items) assert.ok(html.includes(`data-protecao="${item.chave}"`));
+  const item = items[0], senhas = { atual: '', nova: '', confirmacao: '' };
+  const definir = render({ item: { ...item, temSenha: false }, formulario: { item, acao: 'senha', ativar: true }, senhas });
+  assert.ok(definir.includes('Definir senha')); assert.ok(definir.includes('Nova senha')); assert.ok(definir.includes('Confirmar nova senha'));
+  assert.ok(!definir.includes('Senha atual')); assert.equal((definir.match(/type="password"/g) || []).length, 2);
+  const alterar = render({ item, formulario: { item, acao: 'senha' }, senhas });
+  assert.ok(alterar.includes('Senha atual')); assert.equal((alterar.match(/type="password"/g) || []).length, 3);
+  const desligar = render({ item, formulario: { item, acao: 'desligar' }, senhas });
+  assert.ok(desligar.includes('Desligar proteção')); assert.equal((desligar.match(/type="password"/g) || []).length, 1);
+});

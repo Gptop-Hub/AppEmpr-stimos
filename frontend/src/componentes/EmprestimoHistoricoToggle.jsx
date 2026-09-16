@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { renderLinhaJuros, getTotalDevidoParcela } from './Emprestimos/helpers.jsx';
 
 const BRL = (n) => Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
@@ -54,7 +55,7 @@ export default function EmprestimoHistoricoToggle({ emprestimoId }) {
                 <ul style={{ marginTop: 8, paddingLeft: 12 }}>
                   {snapshot.parcelas?.map((p, i) => (
                     <li key={i} style={{ borderBottom: '1px dashed #eee', padding: '4px 0' }}>
-                      {p.numero}ª — {BRL(p.valor_total)} (Cap: {BRL(p.valor_capital)} | Jur: {BRL(p.valor_juros)})
+                      {p.numero}ª — {BRL(getTotalDevidoParcela(p))} ({renderLinhaJuros({ valor_capital: p.valor_capital, valor_juros: p.valor_juros, juros_pendentes: p.juros_pendentes || 0, juros_adicionais: p.juros_adicionais || 0 }, BRL)})
                     </li>
                   ))}
                 </ul>

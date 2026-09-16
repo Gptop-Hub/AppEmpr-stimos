@@ -1,5 +1,6 @@
 // backend/utils/pagamento_manual.js
 const db = require('../models/database');
+const abaterJuros = require('./abater_juros');
 
 // Promises helpers
 function runAsync(sql, params = []) {
@@ -46,9 +47,12 @@ const f2 = (n) => Number(Number(n || 0).toFixed(2));
  * @param {string} dataPagamento - "YYYY-MM-DD"
  * @returns {Promise<{ saldoRestante:number, parcelasAtualizadas:Array }>}
  */
-async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPagamento) {
+async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPagamento, { dbHandle = db, manageTransaction = true } = {}) {
   if (!emprestimoId) throw new Error('emprestimoId inválido');
   if (!Array.isArray(abatimentos)) abatimentos = [];
+  const run = (sql, params = []) => new Promise((resolve, reject) => dbHandle.run(sql, params, function (err) { return err ? reject(err) : resolve(this); }));
+  const get = (sql, params = []) => new Promise((resolve, reject) => dbHandle.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+  const all = (sql, params = []) => new Promise((resolve, reject) => dbHandle.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || [])));
 
   // valor TOTAL que o cliente entregou (usado para registrar na parcela de origem)
   const valorTotalCliente = f2(valorPagamento || 0);
@@ -57,11 +61,11 @@ async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPa
   const updates = [];
   let origemRegistrada = false; // marca se já registramos o valor_total em alguma parcela
 
-  await runAsync('BEGIN');
+  if (manageTransaction) await run('BEGIN');
 
   try {
     // Valida existência do empréstimo
-    const emp = await getAsync('SELECT id FROM emprestimos WHERE id = ?', [emprestimoId]);
+    const emp = await get('SELECT id FROM emprestimos WHERE id = ?', [emprestimoId]);
     if (!emp) throw new Error('Empréstimo não encontrado');
 
     // Para não quebrar caso o front mande parcelas fora de ordem
@@ -71,20 +75,24 @@ async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPa
       const parcelaId = Number(item?.parcelaId || item?.id || 0);
       if (!parcelaId) continue;
 
-      const row = await getAsync(
+      const row = await get(
         'SELECT * FROM parcelas WHERE id = ? AND emprestimo_id = ?',
         [parcelaId, emprestimoId]
       );
       if (!row) continue;
 
-      let valor_total   = f2(row.valor_total);
-      let valor_capital = f2(row.valor_capital);
-      let valor_juros   = f2(row.valor_juros);
-      let valor_pago    = f2(row.valor_pago);
+      let valor_total        = f2(row.valor_total);
+      let valor_capital      = f2(row.valor_capital);
+      let valor_juros_base   = f2(row.valor_juros);             // juros do mês
+      let valor_juros_pend   = f2(row.juros_pendentes || 0);    // juros pendentes
+      let valor_juros_adic   = f2(row.juros_adicionais || 0);   // juros adicionais manuais
+      let valor_pago         = f2(row.valor_pago);
       const original_total = f2(row.valor_total);
 
       // Saldos que realmente podem ser abatidos (juros/capital remanescentes)
-      const saldoJ = Math.max(0, valor_juros);
+      const saldoJAdic = Math.max(0, valor_juros_adic);
+      const saldoJPend = Math.max(0, valor_juros_pend);
+      const saldoJBase = Math.max(0, valor_juros_base);
       const saldoC = Math.max(0, valor_capital);
 
       // Normalização do payload vindo do front
@@ -92,46 +100,85 @@ async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPa
       const reqJ    = f2(item.abatJuros   || item.abatidoJuros   || item.juros  || 0);
       const reqC    = f2(item.abatCapital || item.abatidoCapital || item.capital|| 0);
 
-      let aplicadoJ = 0;
+      let aplicadoJAdic = 0;
+      let aplicadoJPend = 0;
+      let aplicadoJBase = 0;
       let aplicadoC = 0;
 
       if (reqParc > 0) {
-        // Aplica na ordem: primeiro JUROS, depois CAPITAL
-        const usarJ = Math.min(reqParc, saldoCliente, saldoJ);
-        aplicadoJ = f2(usarJ);
+        // Aplica na ordem: adicionais -> pendentes -> base -> capital
+        const limite = Math.min(reqParc, saldoCliente);
+        const abatJ = abaterJuros({
+          valor: limite,
+          jurosAdicionais: saldoJAdic,
+          jurosPendentes: saldoJPend,
+          jurosBase: saldoJBase,
+        });
+        aplicadoJAdic = abatJ.aplicadoAdicionais;
+        aplicadoJPend = abatJ.aplicadoPendentes;
+        aplicadoJBase = abatJ.aplicadoBase;
 
-        const aindaSobra = f2(reqParc - aplicadoJ);
-        const usarC = Math.min(aindaSobra, f2(saldoCliente - aplicadoJ), saldoC);
+        const usarC = Math.min(
+          abatJ.restante,
+          f2(saldoCliente - abatJ.totalAplicado),
+          saldoC
+        );
         aplicadoC = f2(usarC);
       } else {
         // Aplica campos separados
-        const usarJ = Math.min(reqJ, saldoCliente, saldoJ);
-        aplicadoJ = f2(usarJ);
+        const limiteJ = Math.min(reqJ, saldoCliente);
+        const abatJ = abaterJuros({
+          valor: limiteJ,
+          jurosAdicionais: saldoJAdic,
+          jurosPendentes: saldoJPend,
+          jurosBase: saldoJBase,
+        });
+        aplicadoJAdic = abatJ.aplicadoAdicionais;
+        aplicadoJPend = abatJ.aplicadoPendentes;
+        aplicadoJBase = abatJ.aplicadoBase;
 
-        const usarC = Math.min(reqC, f2(saldoCliente - aplicadoJ), saldoC);
+        const usarC = Math.min(
+          reqC,
+          f2(saldoCliente - abatJ.totalAplicado),
+          saldoC
+        );
         aplicadoC = f2(usarC);
       }
 
-      const aplicadoTotal = f2(aplicadoJ + aplicadoC);
+      const aplicadoTotal = f2(aplicadoJAdic + aplicadoJBase + aplicadoC);
       if (aplicadoTotal <= 0) continue;
 
       // Deduz do saldo do cliente (apenas o que realmente foi usado em abatimento)
       saldoCliente = f2(saldoCliente - aplicadoTotal);
 
       // Efetiva nas colunas de JUROS / CAPITAL / TOTAL
-      if (aplicadoJ > 0) {
-        valor_juros = f2(valor_juros - aplicadoJ);
-        valor_total = f2(valor_total - aplicadoJ);
+      if (aplicadoJAdic > 0) {
+        valor_juros_adic = f2(valor_juros_adic - aplicadoJAdic);
+      }
+      if (aplicadoJPend > 0) {
+        valor_juros_pend = f2(valor_juros_pend - aplicadoJPend);
+      }
+      if (aplicadoJBase > 0) {
+        valor_juros_base = f2(valor_juros_base - aplicadoJBase);
       }
       if (aplicadoC > 0) {
         valor_capital = f2(valor_capital - aplicadoC);
-        valor_total   = f2(valor_total   - aplicadoC);
       }
 
       // Nunca negativos
-      valor_juros   = f2(Math.max(0, valor_juros));
-      valor_capital = f2(Math.max(0, valor_capital));
-      valor_total   = f2(Math.max(0, valor_total));
+      valor_juros_base = f2(Math.max(0, valor_juros_base));
+      valor_juros_pend = f2(Math.max(0, valor_juros_pend));
+      valor_juros_adic = f2(Math.max(0, valor_juros_adic));
+      valor_capital    = f2(Math.max(0, valor_capital));
+
+      // Reclassificar adicionais remanescentes como pendentes
+      if (valor_juros_adic > 0) {
+        valor_juros_pend = f2(valor_juros_pend + valor_juros_adic);
+        valor_juros_adic = 0;
+      }
+
+      // Recalcula total (sem adicionais, já reclassificados)
+      valor_total = f2(Math.max(0, valor_capital + valor_juros_base + valor_juros_pend));
 
       // 🔵 REGISTRO DO VALOR PAGO (NOVO COMPORTAMENTO)
       //
@@ -152,11 +199,13 @@ async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPa
       const quitada = valor_total <= 0 ? 1 : 0;
 
       // Atualiza a parcela
-      await runAsync(
+      await run(
         `UPDATE parcelas
            SET valor_total = ?,
                valor_capital = ?,
                valor_juros = ?,
+               juros_pendentes = ?,
+               juros_adicionais = ?,
                valor_pago = ?,
                pago = ?,
                data_pagamento = CASE
@@ -167,7 +216,9 @@ async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPa
         [
           valor_total,
           valor_capital,
-          valor_juros,
+          valor_juros_base,
+          valor_juros_pend,
+          valor_juros_adic,
           valor_pago,
           quitada,
           dataPagamento,
@@ -181,30 +232,37 @@ async function pagamentoManual(emprestimoId, valorPagamento, abatimentos, dataPa
         id: parcelaId,
         valor_total,
         valor_capital,
-        valor_juros,
+        valor_juros: valor_juros_base,
+        juros_pendentes: valor_juros_pend,
+        juros_adicionais: valor_juros_adic,
         valor_pago,
         pago: quitada
       });
     }
 
     // Recalcula e grava o capital_restante do empréstimo (somatório do capital das parcelas ainda abertas)
-    const abertas = await allAsync(
-      'SELECT valor_capital FROM parcelas WHERE emprestimo_id = ? AND (pago IS NULL OR pago = 0)',
+    const abertas = await all(
+      `SELECT p.valor_capital
+         FROM parcelas p
+         JOIN emprestimos e ON e.id = p.emprestimo_id
+        WHERE p.emprestimo_id = ?
+          AND (p.versao IS NULL OR p.versao = e.versao_atual)
+          AND (p.pago IS NULL OR p.pago = 0)`,
       [emprestimoId]
     );
     const novoCapitalRestante = f2(
       (abertas || []).reduce((s, p) => s + f2(p.valor_capital), 0)
     );
 
-    await runAsync(
+    await run(
       'UPDATE emprestimos SET capital_restante = ? WHERE id = ?',
       [novoCapitalRestante, emprestimoId]
     );
 
-    await runAsync('COMMIT');
+    if (manageTransaction) await run('COMMIT');
     return { saldoRestante: f2(saldoCliente), parcelasAtualizadas: updates };
   } catch (e) {
-    try { await runAsync('ROLLBACK'); } catch {}
+    if (manageTransaction) try { await run('ROLLBACK'); } catch {}
     throw e;
   }
 }

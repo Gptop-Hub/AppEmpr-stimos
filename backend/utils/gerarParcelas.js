@@ -1,20 +1,20 @@
 // Gera parcelas compatíveis com o backend e com o preview do frontend.
+const { parseToDate } = require('../services/dateUtils');
 // Retorna array com { numero, valor_total, valor_capital, valor_juros, vencimento_iso, vencimento_ext }
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
 function formatISO(d) {
   if (!d) return null;
-  const dt = new Date(d);
-  if (isNaN(dt.getTime())) return null;
-  // Importante: formato local (YYYY-MM-DD) sem UTC para não “voltar 1 dia”
+  const dt = parseToDate(d);
+  if (!dt) return null;
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function formatExt(d) {
   if (!d) return '-';
-  const dt = new Date(d);
-  if (isNaN(dt.getTime())) return '-';
+  const dt = parseToDate(d);
+  if (!dt) return '-';
   return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()}`;
 }
 
@@ -62,13 +62,13 @@ function gerarParcelas({ capital, taxa_juros, qtdParcelas, dataInicio, diaPagame
   const amortizacao = Number(capital || 0) / Number(qtdParcelas || 1);
   let saldo = Number(capital || 0);
 
-  const baseDate = dataInicio ? new Date(dataInicio) : new Date();
+  const baseDate = parseToDate(dataInicio) || new Date();
   if (isNaN(baseDate.getTime())) throw new Error('dataInicio inválida em gerarParcelas');
 
   const parcelas = [];
 
   // Caminho NOVO: usa primeiroVencimento + soma de meses
-  const firstDueDate = primeiroVencimento ? new Date(primeiroVencimento) : null;
+  const firstDueDate = primeiroVencimento ? parseToDate(primeiroVencimento) : null;
   const hasFirstDue = firstDueDate && !Number.isNaN(firstDueDate.getTime());
 
   if (hasFirstDue) {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import notify from '../../ui/notify';
+import { calcularPreviewParcelas, getTotalDevidoParcela } from '../Emprestimos/helpers.jsx';
 
 export default function useManualLogic({
   emprestimoId,
@@ -89,16 +90,6 @@ export default function useManualLogic({
     emp?.codigo_cliente?.trim?.() ||
     `${emp?.cliente_id ?? ''}-${emp?.id ?? ''}`;
 
-  const addMonthsAdjust = (date, months) => {
-    const d = new Date(date.getTime());
-    const targetMonth = d.getMonth() + months;
-    const y = d.getFullYear() + Math.floor(targetMonth / 12);
-    const m = ((targetMonth % 12) + 12) % 12;
-    const day = d.getDate();
-    const lastDay = new Date(y, m + 1, 0).getDate();
-    return new Date(y, m, Math.min(day, lastDay));
-  };
-
   function parsePrimeiroVencimento(str) {
     if (!str) return null;
     const s = String(str).trim();
@@ -120,48 +111,28 @@ export default function useManualLogic({
     return isNaN(dt.getTime()) ? null : dt;
   }
 
+  function primeiroVencimentoUmMesDepois(data) {
+    const parsed = parsePrimeiroVencimento(data);
+    if (!parsed) return '';
+
+    const nextMonthIndex = parsed.getMonth() + 1;
+    const nextYear = parsed.getFullYear() + Math.floor(nextMonthIndex / 12);
+    const nextMonth = nextMonthIndex % 12;
+    const lastDay = new Date(nextYear, nextMonth + 1, 0).getDate();
+    const day = Math.min(parsed.getDate(), lastDay);
+    return `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
   const previewRenegociacao = useMemo(() => {
-    const total = novoValorNum;
-    const taxa = parseFloat(String(novoTaxa || '0').replace(',', '.')) / 100;
-    const m = parseInt(novoParcelas || '0', 10);
+    const taxaPercent = parseFloat(String(novoTaxa || '0').replace(',', '.'));
+    const firstDue = novoVencimento ? parsePrimeiroVencimento(novoVencimento) : null;
 
-    if (!m || m <= 0 || total <= 0) return [];
-
-    let saldo = total;
-    const preview = [];
-
-    let firstDue = null;
-    if (novoVencimento) {
-      const dp = parsePrimeiroVencimento(novoVencimento);
-      if (dp) firstDue = dp;
-    }
-
-    for (let i = 1; i <= m; i++) {
-      const amort = total / m;
-      const jurosVal = saldo * taxa;
-      const valorParc = amort + jurosVal;
-
-      let vencFormatado;
-      if (!firstDue) {
-        vencFormatado = 'dd mm aaaa';
-      } else {
-        const venc = i === 1 ? firstDue : addMonthsAdjust(firstDue, i - 1);
-        vencFormatado = `${String(venc.getDate()).padStart(2, '0')}/${String(
-          venc.getMonth() + 1
-        ).padStart(2, '0')}/${venc.getFullYear()}`;
-      }
-
-      preview.push({
-        numero: i,
-        amortizacao: isNaN(amort) ? 0 : amort,
-        juros: isNaN(jurosVal) ? 0 : jurosVal,
-        total: isNaN(valorParc) ? 0 : valorParc,
-        vencimento: vencFormatado,
-      });
-
-      saldo -= amort;
-    }
-    return preview;
+    return calcularPreviewParcelas({
+      total: novoValorNum,
+      parcelas: novoParcelas,
+      taxaPercent,
+      primeiroVencimento: firstDue,
+    });
   }, [novoValorNum, novoParcelas, novoTaxa, novoVencimento]);
 
   useEffect(() => {
@@ -194,9 +165,14 @@ export default function useManualLogic({
           : [];
 
         const lista = rawParcelas.map((p, idx) => {
-          const valor_total = Number(p.valor_total ?? 0);
+          const valor_total = getTotalDevidoParcela(p);
           const valor_capital = Number(p.valor_capital ?? 0);
-          const valor_juros = Number(p.valor_juros ?? 0);
+
+          const juros_base = Number(p.valor_juros ?? 0);
+          const juros_pendentes = Number(p.juros_pendentes || 0);
+          const juros_adicionais = Number(p.juros_adicionais || 0);
+          const valor_juros_total = juros_base + juros_pendentes + juros_adicionais;
+
           const cap_pago = Number(p.capital_pago ?? 0);
           const jur_pago = Number(p.juros_pago ?? 0);
 
@@ -205,17 +181,21 @@ export default function useManualLogic({
             (p.status || '').toLowerCase() === 'quitada' ||
             Number(p.valor_pago || 0) >= valor_total - 1e-6 ||
             (valor_capital - cap_pago <= 1e-6 &&
-              valor_juros - jur_pago <= 1e-6);
+              valor_juros_total - jur_pago <= 1e-6);
 
-          const saldoJ = Math.max(valor_juros - jur_pago, 0);
+          const saldoJ = Math.max(valor_juros_total - jur_pago, 0);
           const saldoC = Math.max(valor_capital - cap_pago, 0);
 
           return {
             id: p.id,
             numero: p.numero || idx + 1,
+            vencimento: p.vencimento || null,
             valor_total,
             valor_capital,
-            valor_juros,
+            valor_juros: juros_base,
+            juros_pendentes,
+            juros_adicionais,
+            juros_totais: valor_juros_total,
             capital_pago: cap_pago,
             juros_pago: jur_pago,
             quitada,
@@ -322,6 +302,13 @@ export default function useManualLogic({
   );
   const primeiraAberta = primeirasAbertasOrdenadas[0] || null;
 
+  useEffect(() => {
+    const primeiroVencimento = primeiroVencimentoUmMesDepois(
+      primeiraAberta?.vencimento
+    );
+    if (primeiroVencimento) setNovoVencimento(primeiroVencimento);
+  }, [primeiraAberta?.vencimento]);
+
   const usadoPrimeiraJ = Number(primeiraAberta?.abatJuros || 0);
   const usadoPrimeiraC = Number(primeiraAberta?.abatCapital || 0);
   const usadoPrimeiraTotal = Number(
@@ -360,24 +347,46 @@ export default function useManualLogic({
     ? Number(primeiraAberta.valor_capital || 0)
     : 0;
 
+  // total de juros da parcela no mês (juros base + adicionais)
+  const jurosTotalMes = Math.max(valorTotalParcela - capitalParcela, 0);
+
   const isJurosParcialPreview =
     valorTotal > 0 &&
     primeiraAberta &&
-    saldoJurosParcela > 0 &&
-    valorTotal < saldoJurosParcela - 1e-6;
+    jurosTotalMes > 0 &&
+    valorTotal < jurosTotalMes - 1e-6;
 
   const abatExtraCapital = Math.max(capitalPosParcela - novoCapitalCalculado, 0);
 
-  // --- NOVO: pré-visualização específica para caso de juros parcial ---
+  // --- pré-visualização específica para caso de juros parcial ---
   const previewJurosParcial = useMemo(() => {
     if (!isJurosParcialPreview || !primeiraAberta) return [];
 
     const numeroAtual = primeiraAberta.numero;
-    const jurosParcela = saldoJurosParcela;
-    const jurosRestante = Math.max(jurosParcela - usadoPrimeiraJ, 0);
-    const jurosAdicional = jurosRestante;
-    const totalAtualComAdicional =
-      capitalParcela + jurosParcela + jurosAdicional;
+
+    const capital = Number(primeiraAberta.valor_capital || 0);
+    const jurosBase = Number(primeiraAberta.valor_juros || 0);
+    const jurosPendAntigo = Number(primeiraAberta.juros_pendentes || 0);
+    const jurosAdicAtual = Number(primeiraAberta.juros_adicionais || 0);
+
+    // juros totais devidos antes do pagamento (mês + adicionais antigos)
+    const jurosTotalAntes = jurosBase + jurosPendAntigo + jurosAdicAtual;
+
+    // valor pago agora em juros (sabemos que é < jurosTotalAntes)
+    const pagamento = Number(valorTotal || 0);
+
+    // tudo o que SOBRA de juros continua pendente
+    // (inclui base não paga + pendentes antigos + adicionais restantes)
+    const jurosPendentes = Math.max(jurosTotalAntes - pagamento, 0);
+
+    // no backend, após o juros parcial:
+    // - valor_juros continua sendo o juros base
+    // - juros_pendentes = jurosPendentes
+          // - valor_total = capital + valor_juros + jurosPendentes + jurosAdicionais
+    const novoTotalParcela = capital + jurosBase + jurosPendentes;
+
+    // valor original de contrato (sem adicionais)
+    const totalOriginalContratado = capital + jurosBase;
 
     return parcelas
       .slice()
@@ -388,20 +397,26 @@ export default function useManualLogic({
         if (isAtual) {
           return {
             numero: p.numero,
-            total: totalAtualComAdicional,
-            capital: capitalParcela,
-            juros: jurosParcela,
-            juros_adicional: jurosAdicional,
+            total: novoTotalParcela,
+            total_original: totalOriginalContratado,
+            capital,
+            juros: jurosBase,
+            juros_pendentes: jurosPendentes,
+            juros_adicionais: 0,
+            juros_adicional: jurosPendentes,
             pago: !!p.quitada,
           };
         }
 
+        // demais parcelas seguem como estão
         return {
           numero: p.numero,
-          total: p.valor_total,
-          capital: p.valor_capital,
-          juros: p.valor_juros,
-          juros_adicional: 0,
+          total: getTotalDevidoParcela(p),
+          capital: Number(p.valor_capital || 0),
+          juros: Number(p.valor_juros || 0),
+          juros_pendentes: Number(p.juros_pendentes || 0),
+          juros_adicionais: Number(p.juros_adicionais || 0),
+          juros_adicional: Number(p.juros_pendentes || 0),
           pago: !!p.quitada,
         };
       });
@@ -409,19 +424,58 @@ export default function useManualLogic({
     isJurosParcialPreview,
     primeiraAberta,
     parcelas,
-    saldoJurosParcela,
-    usadoPrimeiraJ,
-    capitalParcela,
+    valorTotal,
   ]);
 
   const handleRegistrar = async () => {
+    // 🔒 BARREIRA: impedir que o modo MANUAL seja usado para
+    // 1) valor exato da parcela
+    // 2) valor exato dos juros do mês
+    // 3) valor que quita o empréstimo (capital_restante + juros do mês)
+    if (primeiraAberta && valorTotal > 0) {
+      const epsilon = 0.01;
+
+      const valorParcela = valorTotalParcela; // total da parcela
+      const jurosMes = jurosTotalMes; // juros da parcela (base + adicionais)
+      const valorQuitar = Number((capitalAnterior + jurosMes).toFixed(2));
+
+      if (Math.abs(valorTotal - valorParcela) < epsilon) {
+        notify.warn(
+          `Este valor é exatamente o valor da próxima parcela (${BRL(
+            valorParcela
+          )}). Use o tipo "Pagamento de parcela" em vez do manual.`
+        );
+        return;
+      }
+
+      if (Math.abs(valorTotal - jurosMes) < epsilon) {
+        notify.warn(
+          `Este valor é exatamente o valor dos juros do mês (${BRL(
+            jurosMes
+          )}). Use o tipo "Pagamento de juros" em vez do manual.`
+        );
+        return;
+      }
+
+      if (Math.abs(valorTotal - valorQuitar) < epsilon) {
+        notify.warn(
+          `Este valor quita o empréstimo (capital + juros do mês = ${BRL(
+            valorQuitar
+          )}). Use o tipo "Quitar Empréstimo" em vez do manual.`
+        );
+        return;
+      }
+    }
+
+    // fluxo de juros parcial (valor < juros do mês)
     if (isJurosParcialPreview) {
       try {
         const resp = await axios.post('/pagamentos/manual-juros-parcial', {
           emprestimoId,
           valorPagamento: valorTotal,
           dataPagamento,
-          observacaoParcela: observacaoParcela || ''
+          observacaoParcela: observacaoParcela || '',
+          parcela_numero: primeiraAberta?.numero ?? null,
         });
 
         onClose &&
@@ -429,12 +483,14 @@ export default function useManualLogic({
             pagamento_ok: true,
             juros_parcial: true,
             emprestimo_id: emprestimoId,
-            parcela: resp?.data?.parcelaAtualizada
+            parcela: resp?.data?.parcelaAtualizada,
           });
 
         return;
       } catch (e) {
-        notify.error(e.response?.data?.erro || 'Erro no pagamento parcial de juros.');
+        notify.error(
+          e.response?.data?.erro || 'Erro no pagamento parcial de juros.'
+        );
         return;
       }
     }
@@ -453,7 +509,9 @@ export default function useManualLogic({
 
       const qtdParcelas = parseInt(novoParcelas || '0', 10);
       if (!qtdParcelas || qtdParcelas <= 0) {
-        notify.warn('Informe uma quantidade válida de parcelas (pelo menos 1).');
+        notify.warn(
+          'Informe uma quantidade válida de parcelas (pelo menos 1).'
+        );
         return;
       }
 
@@ -471,6 +529,7 @@ export default function useManualLogic({
         .filter((p) => !p.quitada)
         .map((p) => ({
           parcelaId: p.id,
+          numero: p.numero,
           abatJuros: Number(p.abatJuros || 0),
           abatCapital: Number(p.abatCapital || 0),
           abatParcela: Number(
@@ -479,7 +538,7 @@ export default function useManualLogic({
         }))
         .filter((i) => i.abatParcela > 0);
 
-      await axios.post('/pagamentos/manual', {
+      const payloadManual = {
         emprestimoId,
         valorPagamento: valorTotal,
         abatimentos,
@@ -488,7 +547,15 @@ export default function useManualLogic({
           2
         )} de ${valorTotal.toFixed(2)}; juros futuros anulados.`,
         observacaoParcela: observacaoParcela?.trim() || '',
-      });
+      };
+
+      // Se apenas uma parcela for afetada, envia o numero para vincular no backend
+      if (abatimentos.length === 1 && abatimentos[0].numero != null) {
+        payloadManual.parcela_numero = abatimentos[0].numero;
+      }
+
+      const resPagamento = await axios.post('/pagamentos/manual', payloadManual);
+      const pagamentoId = resPagamento?.data?.pagamentoId ?? null;
 
       if (!emprestimo) {
         notify.warn('Empréstimo base não carregado.');
@@ -502,6 +569,7 @@ export default function useManualLogic({
         data: (emprestimo.data || '').slice(0, 10),
         data_pagamento: novoVencimento || null,
         observacao: String(novoObs || ''),
+        pagamento_id: pagamentoId,
       };
 
       const resReneg = await axios.post(
@@ -565,7 +633,6 @@ export default function useManualLogic({
     novoVencimento,
     setNovoVencimento,
     previewRenegociacao,
-    // NOVO: pré-visualização específica para juros parcial
     previewJurosParcial,
     registrarHabilitado,
     distribuido,

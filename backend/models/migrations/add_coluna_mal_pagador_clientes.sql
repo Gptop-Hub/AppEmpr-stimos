@@ -1,0 +1,1 @@
+ALTER TABLE clientes ADD COLUMN mal_pagador INTEGER DEFAULT 0;

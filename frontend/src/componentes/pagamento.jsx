@@ -1,24 +1,59 @@
-// pagamento.jsx
+﻿// pagamento.jsx
 import React, { useEffect, useState, useMemo } from 'react';
 import axios from 'axios';
 import Manual from './manual';
 import notify from '../ui/notify';
+import { useLocation } from 'react-router-dom';
+import { renderLinhaJuros, getTotalDevidoParcela } from './Emprestimos/helpers.jsx';
+import { isEmprestimoClienteMalPagador } from '../utils/clientRisk';
+import ClienteIdentity from './common/ClienteIdentity.jsx';
+import useClientesCatalogo from './common/useClientesCatalogo.js';
 
 // baseURL
-axios.defaults.baseURL = 'http://localhost:3001';
+const hojeLocalISO = () => {
+  const d = new Date();
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
+
+const parseLocalISO = (value) => {
+  if (!value || typeof value !== 'string') return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+};
+
+/**
+ * Formata uma data em DD/MM/YYYY.
+ * Caso seja inválida, devolve '–' ou o próprio valor.
+ */
+function formatDateSimple(d) {
+  if (!d) return '-';
+  const dt = parseLocalISO(d) || new Date(d);
+  if (isNaN(dt.getTime())) return d;
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const yyyy = dt.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
 
 export default function Pagamento() {
+  const location = useLocation();
+  const { resolverCliente } = useClientesCatalogo();
   const [emprestimos, setEmprestimos] = useState([]);
   const [pagamentos, setPagamentos] = useState([]);
   const [busca, setBusca] = useState('');
+  const [buscaId, setBuscaId] = useState('');
   const [selecionado, setSelecionado] = useState(null);
   const [valor, setValor] = useState('');
   const [tipoPagamento, setTipoPagamento] = useState('normal');
   const [observacao, setObservacao] = useState('');
   const [loading, setLoading] = useState(true);
-  const [paymentDate, setPaymentDate] = useState(() =>
-    new Date().toISOString().slice(0, 10)
-  );
+  const [paymentDate, setPaymentDate] = useState(() => hojeLocalISO());
+  const [ajustarDatasFuturas, setAjustarDatasFuturas] = useState(false);
+  const [parcelaSelecionadaId, setParcelaSelecionadaId] = useState(null);
 
   // Carrega empréstimos e pagamentos
   useEffect(() => {
@@ -132,9 +167,12 @@ export default function Pagamento() {
 
   // Busca
   const termo = String(busca || '').trim().toLowerCase();
+  const termoId = String(buscaId || '').trim();
   const listaFiltrada = (Array.isArray(emprestimos) ? emprestimos : [])
     .filter((emp) => {
-      if (!termo) return false;
+      if (!termo && !termoId) return false;
+      if (termoId && !String(emp?.id ?? '').startsWith(termoId)) return false;
+      if (!termo) return true;
       const codigo = String(getCodigo(emp)).toLowerCase();
       const nome = String(getNome(emp)).toLowerCase();
       return codigo.startsWith(termo) || nome.startsWith(termo);
@@ -160,15 +198,37 @@ export default function Pagamento() {
     return parcelasAtivasSelecionado.find((x) => !x.pago) || null;
   }, [selecionado, parcelasAtivasSelecionado]);
 
-  const formatDateSimple = (d) => {
-    if (!d) return '—';
-    const dt = new Date(d);
-    if (isNaN(dt.getTime())) return d;
-    const dd = String(dt.getDate()).padStart(2, '0');
-    const mm = String(dt.getMonth() + 1).padStart(2, '0');
-    const yyyy = dt.getFullYear();
-    return `${dd}/${mm}/${yyyy}`;
-  };
+  const proximaDataVencimentoFmt = useMemo(() => {
+    if (!proximaParcela || !proximaParcela.vencimento) return '-';
+    return formatDateSimple(proximaParcela.vencimento);
+  }, [proximaParcela]);
+
+  // Seleciona automaticamente via querystring (#/pagamento?emprestimo=&parcela=)
+  useEffect(() => {
+    if (!Array.isArray(emprestimos) || emprestimos.length === 0) return;
+    const params = new URLSearchParams(location.search);
+    const empParam = params.get('emprestimo');
+    const parcelaParam = params.get('parcela');
+
+    setParcelaSelecionadaId(parcelaParam ? Number(parcelaParam) : null);
+
+    if (!empParam) return;
+    const empId = Number(empParam);
+    if (!empId) return;
+
+    const alvo = emprestimos.find((e) => Number(e.id) === empId);
+    if (!alvo) return;
+
+    setSelecionado(alvo);
+    const valorEmp = getValorEmprestado(alvo);
+    setBusca(
+      `${getNome(alvo)} - ${getCodigo(alvo)} - ${formatarMoeda(valorEmp)}`
+    );
+    setValor('');
+    setTipoPagamento('normal');
+    setObservacao('');
+    setPaymentDate(hojeLocalISO());
+  }, [location.search, emprestimos]);
 
   // valor para quitar (placeholder)
   const calcularValorParaQuitarFrontend = () => {
@@ -176,9 +236,16 @@ export default function Pagamento() {
       if (!selecionado) return null;
       const capitalRest = Number(selecionado.capital_restante || 0);
       if (!proximaParcela) return null;
-      const jurosDaParcela = Number(
-        proximaParcela.original_valor_juros ?? proximaParcela.valor_juros ?? 0
+
+      const jurosBase = Number(
+        proximaParcela.original_valor_juros ??
+          proximaParcela.valor_juros ??
+          0
       );
+      const jurosPend = Number(proximaParcela.juros_pendentes || 0);
+      const jurosAdic = Number(proximaParcela.juros_adicionais || 0);
+      const jurosDaParcela = jurosBase + jurosPend + jurosAdic;
+
       const expected = Number((capitalRest + jurosDaParcela).toFixed(2));
       return expected;
     } catch {
@@ -188,6 +255,22 @@ export default function Pagamento() {
   const valorParaQuitarFrontend = calcularValorParaQuitarFrontend();
 
   const isManual = String(tipoPagamento) === 'manual';
+  const totalPagoSelecionado = useMemo(() => {
+    if (!selecionado) return 0;
+    if (typeof selecionado.total_pago !== 'undefined') {
+      return Number(selecionado.total_pago || 0);
+    }
+    if (!Array.isArray(pagamentos)) return 0;
+    return pagamentos
+      .filter((p) => p.emprestimo_id === selecionado.id)
+      .reduce((s, p) => s + Number(p.valor || 0), 0);
+  }, [selecionado, pagamentos]);
+  const capitalRestanteSelecionado = Number(
+    selecionado?.capital_restante || 0
+  );
+  const valorProximaParcela = proximaParcela
+    ? getTotalDevidoParcela(proximaParcela)
+    : null;
 
   const registrarPagamento = async () => {
     if (!selecionado) {
@@ -216,7 +299,9 @@ export default function Pagamento() {
       : null;
 
     if (!proxima && tipoPagamento !== 'manual') {
-      notify.info('Nao ha parcela pendente (use pagamento manual se necessario).');
+      notify.info(
+        'Nao ha parcela pendente (use pagamento manual se necessario).'
+      );
       return;
     }
 
@@ -225,7 +310,7 @@ export default function Pagamento() {
         notify.error('Parcela alvo nao encontrada.');
         return;
       }
-      const parcelaValor = Number(proxima.valor_total || 0);
+      const parcelaValor = getTotalDevidoParcela(proxima);
       if (Math.abs(vnum - parcelaValor) > 0.001) {
         if (vnum < parcelaValor) {
           notify.warn(
@@ -249,12 +334,20 @@ export default function Pagamento() {
         notify.error('Parcela alvo nao encontrada.');
         return;
       }
-      const jurosOrig = Number(
+
+      // juros efetivos = juros base + juros adicionais (atraso)
+      const jurosBase = Number(
         proxima.original_valor_juros ?? proxima.valor_juros ?? 0
       );
-      if (Math.abs(vnum - jurosOrig) > 0.001) {
+      const jurosPend = Number(proxima.juros_pendentes || 0);
+      const jurosAdic = Number(proxima.juros_adicionais || 0);
+      const jurosTotal = Number((jurosBase + jurosPend + jurosAdic).toFixed(2));
+
+      if (Math.abs(vnum - jurosTotal) > 0.001) {
         notify.warn(
-          `Pagamento de juros exige valor exato (${formatarMoeda(jurosOrig)}).`
+          `Pagamento de juros exige valor exato (${formatarMoeda(
+            jurosTotal
+          )}).`
         );
         return;
       }
@@ -266,7 +359,11 @@ export default function Pagamento() {
       tipoPagamento,
       observacao,
       data: paymentDate,
+      ajustarDatasFuturas,
     };
+    if (proxima && proxima.numero != null) {
+      payload.parcela_numero = proxima.numero; // 1-based
+    }
 
     try {
       const res = await axios.post('/pagamentos', payload);
@@ -275,7 +372,7 @@ export default function Pagamento() {
       setValor('');
       setTipoPagamento('normal');
       setObservacao('');
-      setPaymentDate(new Date().toISOString().slice(0, 10));
+      setPaymentDate(hojeLocalISO());
       await recarregarPagamentosEemprestimos(selecionado.id);
     } catch (err) {
       console.error('Erro ao registrar:', err);
@@ -292,14 +389,16 @@ export default function Pagamento() {
   return (
     <div
       style={{
-        maxWidth: isManual ? 1200 : 420,
+        maxWidth: isManual
+          ? 'var(--main-max-effective, var(--main-max))'
+          : 'min(1200px, var(--main-max-effective, var(--main-max)))',
         margin: 'auto',
         padding: 20,
         fontFamily: 'sans-serif',
       }}
     >
       <h2 style={{ textAlign: 'center', marginBottom: 8 }}>
-        💵 Registrar Pagamento
+        Registrar Pagamento
       </h2>
 
       {loading && <p style={{ textAlign: 'center' }}>Carregando...</p>}
@@ -324,26 +423,63 @@ export default function Pagamento() {
           <label style={{ display: 'block', marginBottom: 6, color: 'var(--text-main)' }}>
             Buscar Empréstimo
           </label>
-          <input
-            type="text"
-            placeholder="ID ou Nome"
-            value={busca}
-            onChange={(e) => {
-              setBusca(e.target.value);
-              setSelecionado(null);
-            }}
-            style={{
-              width: '100%',
-              padding: 8,
-              borderRadius: 6,
-              border: '1px solid var(--border-soft)',
-              marginBottom: 10,
-              background: 'var(--bg-card)',
-              color: 'var(--text-main)',
-            }}
-          />
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="ID"
+              aria-label="Buscar empréstimo por ID"
+              value={buscaId}
+              onChange={(e) => {
+                setBuscaId(e.target.value.replace(/\D/g, ''));
+                setSelecionado(null);
+              }}
+              style={{
+                width: 82,
+                padding: 8,
+                borderRadius: 6,
+                border: '1px solid var(--border-soft)',
+                background: 'var(--bg-card)',
+                color: 'var(--text-main)',
+              }}
+            />
+            <input
+              type="text"
+              placeholder="Buscar por nome ou código"
+              value={busca}
+              onChange={(e) => {
+                setBusca(e.target.value);
+                setSelecionado(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                const primeiro = listaFiltrada[0];
+                if (!primeiro) return;
+                const valorEmp = getValorEmprestado(primeiro);
+                setSelecionado(primeiro);
+                setBusca(
+                  `${getNome(primeiro)} - ${getCodigo(primeiro)} - ${formatarMoeda(
+                    valorEmp
+                  )}`
+                );
+                setValor('');
+                setTipoPagamento('normal');
+                setObservacao('');
+                setPaymentDate(hojeLocalISO());
+              }}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                padding: 8,
+                borderRadius: 6,
+                border: '1px solid var(--border-soft)',
+                background: 'var(--bg-card)',
+                color: 'var(--text-main)',
+              }}
+            />
+          </div>
 
-          {busca && !selecionado && (
+          {(busca || buscaId) && !selecionado && (
             <ul
               style={{
                 listStyle: 'none',
@@ -360,9 +496,11 @@ export default function Pagamento() {
               {listaFiltrada.length ? (
                 listaFiltrada.map((emp) => {
                   const valorEmp = getValorEmprestado(emp);
+                  const empMalPagador = isEmprestimoClienteMalPagador(emp);
                   return (
                     <li
                       key={emp.id}
+                      className={empMalPagador ? 'loan-entry--risk' : undefined}
                       onClick={() => {
                         setSelecionado(emp);
                         setBusca(
@@ -373,7 +511,7 @@ export default function Pagamento() {
                         setValor('');
                         setTipoPagamento('normal');
                         setObservacao('');
-                        setPaymentDate(new Date().toISOString().slice(0, 10));
+                      setPaymentDate(hojeLocalISO());
                       }}
                       style={{
                         padding: 8,
@@ -381,8 +519,18 @@ export default function Pagamento() {
                         borderBottom: '1px solid var(--border-soft)',
                       }}
                     >
-                      {getNome(emp)} — {getCodigo(emp)} —{' '}
-                      {formatarMoeda(valorEmp)}
+                      <div className="cliente-payment-result">
+                        <ClienteIdentity
+                          cliente={resolverCliente(emp.cliente_id, getNome(emp))}
+                          avatarSize={36}
+                          secondary={`${getCodigo(emp)} • ${formatarMoeda(valorEmp)}`}
+                        />
+                        {empMalPagador ? (
+                          <span className="badge-risk badge-risk--inline">
+                            Cliente mal pagador
+                          </span>
+                        ) : null}
+                      </div>
                     </li>
                   );
                 })
@@ -393,125 +541,355 @@ export default function Pagamento() {
           )}
 
           {selecionado && (
-            <div style={{ marginBottom: 12, lineHeight: 1.4, color: 'var(--text-main)' }}>
-              <strong>Selecionado:</strong>
-              <br />
-              <div style={{ marginTop: 6, fontWeight: 600 }}>
-                {getNome(selecionado)}
-              </div>
-              <div style={{ marginTop: 6 }}>
-                ID: {getCodigo(selecionado)}
-                <br />
-                Modalidade:{' '}
-                {selecionado.modalidade === 'aberto'
-                  ? 'Em aberto'
-                  : 'Parcelado'}
-                <br />
-                Valor emprestado:{' '}
-                {formatarMoeda(getValorEmprestado(selecionado))}
-                <br />
-                Data de início do empréstimo:{' '}
-                {selecionado.data
-                  ? formatDateSimple(selecionado.data)
-                  : '—'}
-                <br />
-                Observação: {selecionado.observacao || '—'}
-                <br />
-                <div style={{ marginTop: 8 }}>
-                  <strong>Total pago:</strong>{' '}
-                  {formatarMoeda(
-                    typeof selecionado.total_pago !== 'undefined'
-                      ? selecionado.total_pago
-                      : Array.isArray(pagamentos)
-                      ? pagamentos
-                          .filter(
-                            (p) => p.emprestimo_id === selecionado.id
-                          )
-                          .reduce((s, p) => s + p.valor, 0)
-                      : 0
-                  )}
-                </div>
-                <div style={{ marginTop: 6 }}>
-                  <strong>💰 Capital restante:</strong>{' '}
-                  {formatarMoeda(
-                    typeof selecionado.capital_restante !== 'undefined'
-                      ? selecionado.capital_restante
-                      : 0
-                  )}
-                </div>
-              </div>
-
-              {parcelasAtivasSelecionado.length > 0 && (
-                <>
-                  <div style={{ marginTop: 10 }}>
-                    <strong>Parcelas:</strong>
-                    <ul style={{ paddingLeft: 16, marginTop: 8 }}>
-                      {parcelasAtivasSelecionado.map((p) => {
-                        const jurosOrig = Number(
-                          p.original_valor_juros ?? p.valor_juros ?? 0
-                        );
-                        const jurosAdicionais = Number(p.juros_adicionais || 0);
-                        return (
-                          <li key={p.numero} style={{ marginBottom: 10 }}>
-                            <div style={{ fontWeight: 600 }}>
-                              {p.numero}ª: {formatarMoeda(p.valor_total)}{' '}
-                              {p.pago ? '✅ Pago' : ''}
-                            </div>
-                            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                              (Capital: {formatarMoeda(p.valor_capital)},
-                              {'  '}
-                              Juros: {formatarMoeda(jurosOrig)}
-                              {jurosAdicionais > 0
-                                ? ` + ${formatarMoeda(jurosAdicionais)}`
-                                : ''}
-                              )
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-
-                    {/* Capital + próxima parcela */}
+            <div
+              style={{
+                marginBottom: 14,
+                color: 'var(--text-main)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 10,
+              }}
+            >
+              <section
+                className={
+                  isEmprestimoClienteMalPagador(selecionado)
+                    ? 'loan-entry--risk'
+                    : undefined
+                }
+                style={{
+                  border: isEmprestimoClienteMalPagador(selecionado)
+                    ? '1px solid var(--risk-border)'
+                    : '1px solid var(--border-soft)',
+                  borderRadius: 10,
+                  background: isEmprestimoClienteMalPagador(selecionado)
+                    ? 'var(--risk-bg-soft)'
+                    : 'var(--bg-card)',
+                  padding: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: 10,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div>
                     <div
                       style={{
-                        marginTop: 8,
-                        background: 'var(--bg-card)',
-                        padding: 8,
-                        borderRadius: 4,
-                        border: '1px solid var(--border-soft)',
-                        color: 'var(--text-main)',
+                        color: 'var(--text-muted)',
+                        fontSize: 12,
+                        letterSpacing: '0.03em',
+                        textTransform: 'uppercase',
                       }}
                     >
-                      <div style={{ marginBottom: 10 }}>
-                        <strong>💰 Capital restante:</strong>{' '}
-                        {formatarMoeda(selecionado.capital_restante || 0)}
-                      </div>
-                      {proximaParcela && (
+                      Selecionado
+                    </div>
+                    <div style={{ marginTop: 4, fontWeight: 700, fontSize: 18, lineHeight: 1.15 }}>
+                      <ClienteIdentity
+                        cliente={resolverCliente(
+                          selecionado.cliente_id,
+                          getNome(selecionado)
+                        )}
+                        avatarSize={48}
+                        secondary={`Cliente ID ${selecionado.cliente_id ?? '-'}`}
+                      />
+                      {isEmprestimoClienteMalPagador(selecionado) ? (
                         <>
-                          <div style={{ marginTop: 10 }}>
-                            <strong>➡️ Próxima:</strong>{' '}
-                            {formatarMoeda(proximaParcela.valor_total)}
-                          </div>
-                          <div
-                            style={{ fontSize: 13, marginTop: 4, color: 'var(--text-muted)' }}
-                          >
-                            (Capital:{' '}
-                            {formatarMoeda(proximaParcela.valor_capital)},
-                            {'  '}
-                            Juros:{' '}
-                            {formatarMoeda(proximaParcela.valor_juros)}
-                            {Number(proximaParcela.juros_adicionais || 0) > 0
-                              ? ` + ${formatarMoeda(
-                                  Number(proximaParcela.juros_adicionais || 0)
-                                )}`
-                              : ''}
-                            )
-                          </div>
+                          {' '}
+                          <span className="badge-risk badge-risk--inline">
+                            Cliente mal pagador
+                          </span>
                         </>
-                      )}
+                      ) : null}
                     </div>
                   </div>
-                </>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <span
+                      style={{
+                        padding: '4px 10px',
+                        borderRadius: 999,
+                        border: '1px solid var(--border-soft)',
+                        background: 'var(--bg-body)',
+                        fontWeight: 600,
+                        fontSize: 12,
+                      }}
+                    >
+                      ID {getCodigo(selecionado)}
+                    </span>
+                    {parcelaSelecionadaId ? (
+                      <span
+                        style={{
+                          padding: '4px 10px',
+                          borderRadius: 999,
+                          border: '1px solid rgba(37,99,235,0.35)',
+                          background: 'rgba(37,99,235,0.12)',
+                          fontWeight: 600,
+                          fontSize: 12,
+                        }}
+                      >
+                        Parcela alvo #{parcelaSelecionadaId}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(185px, 1fr))',
+                    gap: 6,
+                  }}
+                >
+                  <div
+                    style={{
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: 'var(--bg-body)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Modalidade</div>
+                    <div style={{ fontWeight: 600, marginTop: 2 }}>
+                      {selecionado.modalidade === 'aberto' ? 'Em aberto' : 'Parcelado'}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: 'var(--bg-body)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Valor emprestado</div>
+                    <div style={{ fontWeight: 700, marginTop: 2 }}>
+                      {formatarMoeda(getValorEmprestado(selecionado))}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: 'var(--bg-body)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Próximo vencimento</div>
+                    <div style={{ fontWeight: 600, marginTop: 2 }}>{proximaDataVencimentoFmt}</div>
+                  </div>
+                  <div
+                    style={{
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: 'var(--bg-body)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Observação</div>
+                    <div
+                      style={{
+                        fontWeight: 600,
+                        marginTop: 2,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                      title={selecionado.observacao || 'Sem observação'}
+                    >
+                      {selecionado.observacao || 'Sem observação'}
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))',
+                    gap: 6,
+                  }}
+                >
+                  <div
+                    style={{
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: 'var(--bg-body)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Total pago</div>
+                    <div style={{ marginTop: 2, fontSize: 18, fontWeight: 700 }}>
+                      {formatarMoeda(totalPagoSelecionado)}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: 'var(--bg-body)',
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Capital restante</div>
+                    <div style={{ marginTop: 2, fontSize: 18, fontWeight: 700 }}>
+                      {formatarMoeda(capitalRestanteSelecionado)}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      border: proximaParcela
+                        ? '1px solid rgba(37, 99, 235, 0.54)'
+                        : '1px solid var(--border-soft)',
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      background: proximaParcela
+                        ? 'linear-gradient(180deg, rgba(59, 130, 246, 0.144), rgba(59, 130, 246, 0.06))'
+                        : 'var(--bg-body)',
+                      boxShadow: proximaParcela
+                        ? 'inset 0 0 0 1px rgba(59, 130, 246, 0.168)'
+                        : 'none',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: proximaParcela ? '#1e3a8a' : 'var(--text-muted)',
+                        fontWeight: proximaParcela ? 700 : 400,
+                      }}
+                    >
+                      Parcela atual
+                    </div>
+                    <div style={{ marginTop: 2, fontSize: 18, fontWeight: 700 }}>
+                      {valorProximaParcela != null
+                        ? formatarMoeda(valorProximaParcela)
+                        : '-'}
+                    </div>
+                    {proximaParcela ? (
+                      <div style={{ fontSize: 12, marginTop: 2, color: 'var(--text-muted)' }}>
+                        Venc.: {formatDateSimple(proximaParcela.vencimento)}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+
+              {parcelasAtivasSelecionado.length > 0 && (
+                <section
+                  style={{
+                    border: '1px solid var(--border-soft)',
+                    borderRadius: 10,
+                    background: 'var(--bg-card)',
+                    padding: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      marginBottom: 8,
+                      fontWeight: 700,
+                      fontSize: 15,
+                    }}
+                  >
+                    Parcelas
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                      gap: 8,
+                    }}
+                  >
+                    {parcelasAtivasSelecionado.map((p) => {
+                      const totalDevido = getTotalDevidoParcela(p);
+                      const parcelaPaga = Boolean(p.pago);
+                      const originalBase =
+                        p.valor_original ??
+                        (p.valor_total != null ? Number(p.valor_total || 0) : null);
+                      const mostrarOriginal =
+                        originalBase != null &&
+                        Number(originalBase) > 0 &&
+                        Math.abs(Number(originalBase) - Number(totalDevido || 0)) > 0.009;
+                      return (
+                        <article
+                          key={p.numero}
+                          style={{
+                            border: parcelaPaga
+                              ? '1px solid rgba(22, 163, 74, 0.45)'
+                              : '1px solid var(--border-soft)',
+                            borderRadius: 7,
+                            padding: 8,
+                            background: parcelaPaga
+                              ? 'linear-gradient(180deg, rgba(34, 197, 94, 0.14), rgba(34, 197, 94, 0.07))'
+                              : 'var(--bg-body)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                            boxShadow: parcelaPaga
+                              ? 'inset 0 0 0 1px rgba(22, 163, 74, 0.07)'
+                              : 'none',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 8,
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <strong style={{ opacity: parcelaPaga ? 0.58 : 1 }}>
+                              {p.numero}ª parcela
+                            </strong>
+                            {p.pago ? (
+                              <span
+                                style={{
+                                  borderRadius: 999,
+                                  padding: '3px 10px',
+                                  fontSize: 12,
+                                  fontWeight: 800,
+                                  letterSpacing: '0.01em',
+                                  color: '#f0fdf4',
+                                  background: '#15803d',
+                                  border: '1px solid #166534',
+                                  boxShadow: '0 1px 4px rgba(21, 128, 61, 0.3)',
+                                }}
+                              >
+                                ✓ Pago
+                              </span>
+                            ) : null}
+                          </div>
+                          <div style={{ fontSize: 21, fontWeight: 700, opacity: parcelaPaga ? 0.58 : 1 }}>
+                            {formatarMoeda(totalDevido)}
+                          </div>
+                          {mostrarOriginal ? (
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)', opacity: parcelaPaga ? 0.62 : 1 }}>
+                              Original: {formatarMoeda(originalBase)}
+                            </div>
+                          ) : null}
+                          <div style={{ fontSize: 12, color: 'var(--text-muted)', opacity: parcelaPaga ? 0.62 : 1 }}>
+                            {renderLinhaJuros(
+                              {
+                                valor_capital: p.valor_capital,
+                                valor_juros: p.valor_juros,
+                                juros_pendentes: p.juros_pendentes || 0,
+                                juros_adicionais: p.juros_adicionais || 0,
+                              },
+                              formatarMoeda
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)', opacity: parcelaPaga ? 0.62 : 1 }}>
+                            Vencimento: {formatDateSimple(p.vencimento)}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
               )}
             </div>
           )}
@@ -519,14 +897,13 @@ export default function Pagamento() {
           {/* Inputs principais */}
           <div
             style={{
-              display: 'flex',
-              gap: 8,
-              alignItems: 'flex-end',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+              gap: 10,
               marginBottom: 8,
-              flexWrap: 'wrap',
             }}
           >
-            <div style={{ flex: '0 0 170px' }}>
+            <div>
               <label
                 style={{
                   display: 'block',
@@ -535,7 +912,7 @@ export default function Pagamento() {
                   color: 'var(--text-main)',
                 }}
               >
-                Valor do pagamento
+                Cliente está pagando agora
               </label>
               <input
                 type="text"
@@ -559,7 +936,7 @@ export default function Pagamento() {
               />
             </div>
 
-            <div style={{ flex: '0 0 210px' }}>
+            <div>
               <label
                 style={{
                   display: 'block',
@@ -568,7 +945,7 @@ export default function Pagamento() {
                   color: 'var(--text-main)',
                 }}
               >
-                Tipo
+                Tipo de pagamento
               </label>
               <select
                 value={tipoPagamento}
@@ -583,13 +960,13 @@ export default function Pagamento() {
                 }}
               >
                 <option value="normal">Pagamento de parcela</option>
-                <option value="manual">Pagamento manual</option>
+                <option value="manual">Pagamento em aberto</option>
                 <option value="juros">Pagamento de juros</option>
                 <option value="quitar">Quitar Empréstimo</option>
               </select>
             </div>
 
-            <div style={{ flex: '0 0 140px' }}>
+            <div>
               <label
                 style={{
                   display: 'block',
@@ -598,7 +975,7 @@ export default function Pagamento() {
                   color: 'var(--text-main)',
                 }}
               >
-                Data
+                Data do pagamento
               </label>
               <input
                 type="date"
@@ -690,10 +1067,11 @@ export default function Pagamento() {
                   setValor('');
                   setTipoPagamento('normal');
                   setObservacao('');
-                  setPaymentDate(
-                    new Date().toISOString().slice(0, 10)
-                  );
+                  setPaymentDate(hojeLocalISO());
+                  return;
                 }
+                // cancelado: volta para pagamento de parcela
+                setTipoPagamento('normal');
               }}
             />
           </div>

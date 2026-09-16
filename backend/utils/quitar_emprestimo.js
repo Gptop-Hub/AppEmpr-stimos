@@ -31,12 +31,10 @@ function formatDataDDMonthYYYY(iso) {
  * data: ISO string da data do pagamento
  * observacao: texto extra informado
  */
-module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualIndex = 0, valor = 0, data = null, observacao = '') {
-  if (!Array.isArray(parcelas) || parcelas.length === 0) return [];
-
+function calcularValorQuitacao(parcelas = [], atualIndex = 0) {
+  if (!Array.isArray(parcelas) || parcelas.length === 0) throw new Error('Nenhuma parcela pendente para quitação.');
   const proxima = parcelas[atualIndex];
   if (!proxima) throw new Error('Próxima parcela não encontrada.');
-
   // considera apenas parcelas não pagas a partir do índice atual
   const unpaid = parcelas.slice(atualIndex).filter(p => !p.pago);
 
@@ -53,7 +51,13 @@ module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualInde
   // Juros considerados somente da próxima parcela atual
   const jurosAtual = Number(proxima.valor_juros ?? 0);
 
-  const expected = Number((somaCapital + jurosAtual).toFixed(2));
+  return { expected: Number((somaCapital + jurosAtual).toFixed(2)), somaCapital: Number(somaCapital.toFixed(2)), jurosAtual: Number(jurosAtual.toFixed(2)), unpaid, proxima };
+}
+
+async function aplicarQuitarEmprestimo(parcelas = [], atualIndex = 0, valor = 0, data = null, observacao = '') {
+  if (!Array.isArray(parcelas) || parcelas.length === 0) return [];
+  const calculation = calcularValorQuitacao(parcelas, atualIndex);
+  const { expected, jurosAtual, unpaid, proxima } = calculation;
   const provided = Number(Number(valor || 0).toFixed(2));
 
   // validação com tolerância por arredondamento (até 5 centavos de diferença)
@@ -115,4 +119,6 @@ module.exports = async function aplicarQuitarEmprestimo(parcelas = [], atualInde
   });
 
   return updates;
-};
+}
+module.exports = aplicarQuitarEmprestimo;
+module.exports.calcularValorQuitacao = calcularValorQuitacao;

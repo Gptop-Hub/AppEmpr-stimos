@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS renegociacoes_historico (
   versao INTEGER NOT NULL,
   snapshot_emprestimo TEXT NOT NULL,
   snapshot_parcelas   TEXT NOT NULL,
+  tipo TEXT,
+  observacao TEXT,
+  detalhes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (emprestimo_id) REFERENCES emprestimos(id)
 );

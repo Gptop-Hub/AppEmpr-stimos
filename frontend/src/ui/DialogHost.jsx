@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const TOAST_MIN_TIMEOUT = 1200;
+const DIALOG_Z_INDEX_OVERLAY = 20040;
+const DIALOG_Z_INDEX_TOAST = 20050;
 
 const normalizeToast = (payload) => {
   if (payload && typeof payload === "object") {
@@ -22,6 +24,10 @@ const normalizeModal = (payload) => {
       defaultValue: payload.defaultValue,
       placeholder: payload.placeholder,
       typeAttr: payload.type,
+      inputMode: payload.inputMode,
+      pattern: payload.pattern,
+      maxLength: payload.maxLength,
+      sanitize: payload.sanitize,
     };
   }
   return { message: String(payload ?? "") };
@@ -59,6 +65,7 @@ export default function DialogHost() {
   const [toasts, setToasts] = useState([]); // {id, message}
   const [modal, setModal] = useState(null); // {type, message, resolve, ...}
   const [promptValue, setPromptValue] = useState("");
+  const [showPromptPassword, setShowPromptPassword] = useState(false);
   const idRef = useRef(1);
   const promptInputRef = useRef(null);
 
@@ -83,6 +90,10 @@ export default function DialogHost() {
           defaultValue: evt.defaultValue,
           placeholder: evt.placeholder,
           typeAttr: evt.typeAttr,
+          inputMode: evt.inputMode,
+          pattern: evt.pattern,
+          maxLength: evt.maxLength,
+          sanitize: evt.sanitize,
           resolve: evt.resolve,
         });
       }
@@ -95,6 +106,7 @@ export default function DialogHost() {
   useEffect(() => {
     if (modal?.type === "prompt") {
       setPromptValue(String(modal.defaultValue ?? ""));
+      setShowPromptPassword(false);
       const id = requestAnimationFrame(() => {
         promptInputRef.current?.focus();
         promptInputRef.current?.select();
@@ -156,7 +168,7 @@ export default function DialogHost() {
         display: "flex",
         flexDirection: "column",
         gap: 8,
-        zIndex: 9999,
+        zIndex: DIALOG_Z_INDEX_TOAST,
         pointerEvents: "none",
       },
       toast: {
@@ -176,23 +188,31 @@ export default function DialogHost() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        zIndex: 9998,
+        zIndex: DIALOG_Z_INDEX_OVERLAY,
       },
       modal: {
-        background: "#fff",
-        color: "#111",
+        background: "var(--bg-card)",
+        color: "var(--text-main)",
         width: "min(520px, 92vw)",
         borderRadius: 12,
         boxShadow: "0 10px 28px rgba(0,0,0,0.3)",
         padding: 18,
+        border: "1px solid var(--border-soft)",
       },
       modalTitle: { fontSize: 16, fontWeight: 700, marginBottom: 8 },
-      modalMsg: { fontSize: 14, lineHeight: 1.4, marginBottom: 14, whiteSpace: "pre-wrap" },
+      modalMsg: {
+        fontSize: 14,
+        lineHeight: 1.4,
+        marginBottom: 14,
+        whiteSpace: "pre-wrap",
+        color: "var(--text-main)",
+      },
       modalRow: { display: "flex", gap: 8, justifyContent: "flex-end" },
       btn: {
-        border: "1px solid #d1d5db",
+        border: "1px solid var(--border-soft)",
         borderRadius: 8,
-        background: "#f9fafb",
+        background: "var(--bg-card)",
+        color: "var(--text-main)",
         padding: "8px 14px",
         cursor: "pointer",
       },
@@ -205,9 +225,30 @@ export default function DialogHost() {
         width: "100%",
         padding: "8px 10px",
         borderRadius: 6,
-        border: "1px solid #d1d5db",
+        border: "1px solid var(--border-soft)",
         fontSize: 14,
         marginBottom: 14,
+        background: "var(--bg-card)",
+        color: "var(--text-main)",
+        boxSizing: "border-box",
+      },
+      passwordFieldWrap: {
+        position: "relative",
+        marginBottom: 14,
+      },
+      togglePasswordBtn: {
+        position: "absolute",
+        right: 8,
+        top: "50%",
+        transform: "translateY(-50%)",
+        border: "1px solid var(--border-soft)",
+        borderRadius: 6,
+        background: "var(--bg-body)",
+        color: "var(--text-main)",
+        padding: "4px 8px",
+        fontSize: 12,
+        lineHeight: 1.2,
+        cursor: "pointer",
       },
     }),
     []
@@ -218,7 +259,7 @@ export default function DialogHost() {
     (modal?.type === "alert"
       ? "Mensagem"
       : modal?.type === "confirm"
-      ? "Confirmacao"
+      ? "Confirmação"
       : "Informe o valor");
 
   const okLabel = modal?.okText || "OK";
@@ -236,6 +277,7 @@ export default function DialogHost() {
 
       {modal && (
         <div
+          data-dialog-overlay="true"
           style={styles.overlay}
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) {
@@ -247,16 +289,59 @@ export default function DialogHost() {
           <div style={styles.modal} onMouseDown={(e) => e.stopPropagation()}>
             <div style={styles.modalTitle}>{modalTitle}</div>
             <div style={styles.modalMsg}>{modal.message}</div>
-            {modal.type === "prompt" && (
+            {modal.type === "prompt" && modal.typeAttr === "password" ? (
+              <div style={styles.passwordFieldWrap}>
+                <input
+                  ref={promptInputRef}
+                  style={{ ...styles.input, marginBottom: 0, paddingRight: 86 }}
+                  type={showPromptPassword ? "text" : "password"}
+                  value={promptValue}
+                  onChange={(e) => setPromptValue(e.target.value)}
+                  placeholder={modal.placeholder || ""}
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  style={styles.togglePasswordBtn}
+                  onClick={() => setShowPromptPassword((prev) => !prev)}
+                  aria-label={showPromptPassword ? "Ocultar senha" : "Mostrar senha"}
+                  title={showPromptPassword ? "Ocultar senha" : "Mostrar senha"}
+                >
+                  {showPromptPassword ? "Ocultar" : "Mostrar"}
+                </button>
+              </div>
+            ) : modal.type === "prompt" ? (
               <input
                 ref={promptInputRef}
                 style={styles.input}
                 type={modal.typeAttr || "text"}
                 value={promptValue}
-                onChange={(e) => setPromptValue(e.target.value)}
+                onChange={(e) => {
+                  let next = e.target.value;
+                  if (typeof modal.sanitize === "function") {
+                    try {
+                      next = String(modal.sanitize(next) ?? "");
+                    } catch {}
+                  }
+                  if (
+                    Number.isFinite(Number(modal.maxLength)) &&
+                    Number(modal.maxLength) > 0
+                  ) {
+                    next = next.slice(0, Number(modal.maxLength));
+                  }
+                  setPromptValue(next);
+                }}
                 placeholder={modal.placeholder || ""}
+                inputMode={modal.inputMode || undefined}
+                pattern={modal.pattern || undefined}
+                maxLength={
+                  Number.isFinite(Number(modal.maxLength)) &&
+                  Number(modal.maxLength) > 0
+                    ? Number(modal.maxLength)
+                    : undefined
+                }
               />
-            )}
+            ) : null}
             <div style={styles.modalRow}>
               {modal.type === "alert" ? (
                 <button style={{ ...styles.btn, ...styles.btnPrimary }} onClick={closeAlert}>

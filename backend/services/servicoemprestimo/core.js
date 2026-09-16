@@ -127,7 +127,7 @@ function calcularCapitalRestanteComRegra(emprestimoRow, parcelasAtuais = []) {
   return Number(Number(capitalRestanteFinal).toFixed(2));
 }
 
-function buildHistoricoParcelas(emprestimoId, snapshotJson, pagamentos = []) {
+function buildHistoricoParcelas(emprestimoId, snapshotJson, _pagamentos = []) {
   if (!snapshotJson) {
     return { parcelas: [], capitalRestanteVisual: 0 };
   }
@@ -156,8 +156,9 @@ function buildHistoricoParcelas(emprestimoId, snapshotJson, pagamentos = []) {
       const valorTotal = Number((valorCapital + valorJuros).toFixed(2));
 
       const valorPagoSnapshot = num(p.valor_pago);
-
-      const pagoFlag = valorTotal > 0 && valorPagoSnapshot >= valorTotal ? 1 : 0;
+      const pagoSnapshotFlag = isPaidFlag(p.pago);
+      const pagoDerivado = valorTotal > 0 && valorPagoSnapshot >= valorTotal;
+      const pagoFlag = pagoSnapshotFlag || pagoDerivado ? 1 : 0;
 
       return {
         id:
@@ -174,6 +175,7 @@ function buildHistoricoParcelas(emprestimoId, snapshotJson, pagamentos = []) {
         valor_pago: valorPagoSnapshot,
 
         valor_pago_snapshot: valorPagoSnapshot,
+        valor_pago_visual: valorPagoSnapshot,
 
         valor_excedente: num(p.valor_excedente),
 
@@ -182,10 +184,13 @@ function buildHistoricoParcelas(emprestimoId, snapshotJson, pagamentos = []) {
         data_pagamento: p.data_pagamento || null,
 
         renegociada: 1,
-        explicacao: p.explicacao || "Parcela antiga (renegociada)",
+        explicacao: p.explicacao || "Parcela (anterior)",
 
-        observacao: p.observacao || "",
-        juros_adicionais: num(p.juros_adicionais),
+          observacao: p.observacao || "",
+          juros_pendentes: num(
+            p.juros_pendentes != null ? p.juros_pendentes : p.juros_adicionais
+          ),
+          juros_adicionais: num(p.juros_adicionais),
         tipo_pagamento: p.tipo_pagamento || null,
         valor_com_desconto:
           p.valor_com_desconto != null ? num(p.valor_com_desconto) : undefined,
@@ -194,42 +199,19 @@ function buildHistoricoParcelas(emprestimoId, snapshotJson, pagamentos = []) {
       };
     });
 
-    const pagamentosPorNumero = {};
-    (pagamentos || []).forEach((pg) => {
-      if (!pg) return;
-      const valor = num(pg.valor);
-      if (valor <= 0) return;
-      let numero = null;
-      if (pg.parcela_origem != null) {
-        numero = Number(pg.parcela_origem);
-      } else if (pg.parcela_numero != null) {
-        numero = Number(pg.parcela_numero);
-      }
-      if (!Number.isFinite(numero)) return;
-      if (!pagamentosPorNumero[numero]) pagamentosPorNumero[numero] = 0;
-      pagamentosPorNumero[numero] = num(pagamentosPorNumero[numero] + valor);
-    });
-
-    historico.forEach((parcela) => {
-      if (!parcela) return;
-      const numero = Number(parcela.numero);
-      const soma = Number.isFinite(numero) ? pagamentosPorNumero[numero] : undefined;
-      if (soma != null && soma > 0) {
-        const visual = num(soma);
-        parcela.valor_pago = visual;
-        parcela.valor_pago_visual = visual;
-      } else {
-        parcela.valor_pago_visual = parcela.valor_pago_snapshot;
-        parcela.valor_pago = parcela.valor_pago_snapshot;
-      }
-    });
+    // A visão histórica deve ser um retrato congelado da versão.
+    // Não remapeamos "valor_pago" via tabela pagamentos para evitar
+    // contaminação entre versões com o mesmo número de parcela.
 
     const capitalRestanteVisual = historico.reduce((acc, parcela) => {
       if (!parcela) return acc;
       const valorTotal = toNumberSafe(parcela.valor_total);
       const pagoSnapshot = toNumberSafe(parcela.valor_pago_snapshot);
       const capitalAtual = Math.max(0, toNumberSafe(parcela.valor_capital));
-      const quitada = valorTotal > 0 && pagoSnapshot >= valorTotal;
+      const quitada =
+        parcela.pago === 1 ||
+        parcela.pago === true ||
+        (valorTotal > 0 && pagoSnapshot >= valorTotal);
       return quitada ? acc : acc + capitalAtual;
     }, 0);
 

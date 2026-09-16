@@ -1,26 +1,80 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 import notify from '../ui/notify';
+import {
+  CLIENT_PHOTO_ACCEPT,
+  formatarTamanhoFoto,
+  prepararFotoCliente,
+} from './common/clientePhotoProcessing';
+import ClientePhotoZoom from './common/ClientePhotoZoom.jsx';
+
+const hojeLocalISO = () => {
+  const d = new Date();
+  const yy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
 
 export default function NovoCliente() {
-  const hoje = new Date().toISOString().split('T')[0];
+  const navigate = useNavigate();
+  const hoje = hojeLocalISO();
 
   const formInicial = {
     id: '',
     nome: '', cpf: '', ddd: '', telefone: '',
     cidade: '', cidadeLivre: '', bairro: '', rua: '', numero: '',
     emPredio: false, nomePredio: '', andar: '', flat: '',
-    empresa: '', ruaEmpresa: '', bairroEmpresa: '', funcao: '', telEmpresa: '',
+    empresa: '', categoriaTrabalho: '', ruaEmpresa: '', bairroEmpresa: '', funcao: '', telEmpresa: '',
     referencia: '', observacao: '', criadoEm: hoje
   };
 
   const [form, setForm] = useState(formInicial);
+  const [hoverQuick, setHoverQuick] = useState(null);
+  const [fotoArquivo, setFotoArquivo] = useState(null);
+  const [fotoPreview, setFotoPreview] = useState('');
+  const [fotoNomeOriginal, setFotoNomeOriginal] = useState('');
+  const [processandoFoto, setProcessandoFoto] = useState(false);
+  const [salvando, setSalvando] = useState(false);
+  const fotoInputRef = useRef(null);
 
   // Para mostrar se ID já existe ao sair do campo
   const [idExiste, setIdExiste] = useState(false);
 
   // Para mostrar se CPF já existe
   const [cpfExiste, setCpfExiste] = useState(false);
+
+  useEffect(
+    () => () => {
+      if (fotoPreview) URL.revokeObjectURL(fotoPreview);
+    },
+    [fotoPreview]
+  );
+
+  const selecionarFoto = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setProcessandoFoto(true);
+    try {
+      const fotoPreparada = await prepararFotoCliente(file);
+      setFotoArquivo(fotoPreparada);
+      setFotoNomeOriginal(file.name);
+      setFotoPreview(URL.createObjectURL(fotoPreparada));
+    } catch (err) {
+      notify.error(err?.message || 'Não foi possível preparar a foto.');
+    } finally {
+      setProcessandoFoto(false);
+    }
+  };
+
+  const removerFotoSelecionada = () => {
+    setFotoArquivo(null);
+    setFotoPreview('');
+    setFotoNomeOriginal('');
+  };
 
   const handleChange = e => {
     const { name, value, type, checked } = e.target;
@@ -47,7 +101,7 @@ export default function NovoCliente() {
   // Função para checar se o ID existe no backend
   const checarIdExiste = async (id) => {
     try {
-      const res = await axios.get(`http://localhost:3001/clientes/check-id/${id}`);
+      const res = await axios.get(`/clientes/check-id/${id}`);
       return res.data.exists;
     } catch (error) {
       console.error('Erro ao checar ID:', error);
@@ -78,7 +132,7 @@ export default function NovoCliente() {
     try {
       const cpfClean = cpfDigits(cpfValue);
       if (!cpfClean) return false;
-      const res = await axios.get(`http://localhost:3001/clientes/check-cpf`, { params: { cpf: cpfClean } });
+      const res = await axios.get(`/clientes/check-cpf`, { params: { cpf: cpfClean } });
       return res.data && res.data.exists;
     } catch (err) {
       console.error('Erro checando CPF:', err);
@@ -127,7 +181,7 @@ export default function NovoCliente() {
       endereco += `, Prédio: ${form.nomePredio}, Andar: ${form.andar}, Flat: ${form.flat}`;
     }
 
-    const trabalho = `Empresa: ${form.empresa}, Rua: ${form.ruaEmpresa}, Bairro: ${form.bairroEmpresa}, Função: ${form.funcao}, Telefone: ${form.telEmpresa}`;
+    const trabalho = `Empresa: ${form.empresa}, Categoria: ${form.categoriaTrabalho}, Rua: ${form.ruaEmpresa}, Bairro: ${form.bairroEmpresa}, Função: ${form.funcao}, Telefone: ${form.telEmpresa}`;
     const telefone = `(${form.ddd}) ${form.telefone}`;
 
     const payload = {
@@ -137,6 +191,7 @@ export default function NovoCliente() {
       telefone,
       endereco,
       trabalho,
+      categoria_trabalho: form.categoriaTrabalho,
       referencia: form.referencia,
       observacao: form.observacao,
       criadoEm: form.criadoEm
@@ -146,12 +201,45 @@ export default function NovoCliente() {
       payload.id = parseInt(form.id, 10);
     }
 
+    if (processandoFoto) {
+      notify.warn('Aguarde a foto terminar de ser preparada.');
+      return;
+    }
+    if (salvando) return;
+    setSalvando(true);
+
     try {
-      const res = await axios.post('http://localhost:3001/clientes', payload);
-      notify.success(`Cliente cadastrado! ID: ${res.data.id}`);
+      const res = await axios.post('/clientes', payload);
+      let fotoSalva = true;
+
+      if (fotoArquivo) {
+        const fotoData = new FormData();
+        fotoData.append('foto', fotoArquivo);
+        try {
+          await axios.post(
+            `/clientes/${res.data.id}/foto`,
+            fotoData
+          );
+        } catch (fotoErr) {
+          fotoSalva = false;
+          console.error('Cliente criado, mas houve erro ao salvar a foto:', fotoErr);
+        }
+      }
+
       setForm(formInicial);
       setIdExiste(false);
       setCpfExiste(false);
+      setFotoArquivo(null);
+      setFotoPreview('');
+      setFotoNomeOriginal('');
+
+      if (fotoSalva) {
+        notify.success(`Cliente cadastrado! ID: ${res.data.id}`);
+      } else {
+        notify.warn(
+          `Cliente cadastrado com ID ${res.data.id}, mas a foto não foi salva. Tente novamente na edição.`
+        );
+      }
     } catch (err) {
       // tratar CPF duplicado vindo do backend
       if (err.response?.status === 409) {
@@ -171,13 +259,23 @@ export default function NovoCliente() {
       }
       console.error(err);
       notify.error('Erro ao cadastrar. Veja console.');
+    } finally {
+      setSalvando(false);
     }
+  };
+
+  const onEnterSubmit = (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.target && e.target.tagName === 'TEXTAREA') return;
+    if (e.target && e.target.tagName === 'BUTTON') return;
+    e.preventDefault();
+    salvar();
   };
 
   // ===== estilos unificados modo escuro =====
   const containerStyle = {
     padding: 20,
-    maxWidth: 700,
+    maxWidth: 'min(980px, var(--main-max-effective, var(--main-max)))',
     margin: '0 auto',
     fontFamily: 'sans-serif',
     color: 'var(--text-main)',
@@ -225,6 +323,17 @@ export default function NovoCliente() {
     cursor: 'pointer',
   };
 
+  const backButtonStyle = {
+    padding: '8px 12px',
+    borderRadius: 6,
+    border: '1px solid var(--border-soft)',
+    background: 'var(--bg-body)',
+    color: 'var(--text-main)',
+    cursor: 'pointer',
+    fontWeight: 600,
+    fontSize: 13,
+  };
+
   const bloco = {
     marginBottom: 20,
     paddingBottom: 14,
@@ -235,8 +344,69 @@ export default function NovoCliente() {
 
   return (
     <div style={containerStyle}>
-      <div style={cardStyle}>
-        <h2 style={{ textAlign: 'center', marginTop: 0, marginBottom: 20 }}>🧍‍♂️ Novo Cliente</h2>
+      <div style={cardStyle} onKeyDown={onEnterSubmit}>
+        <div style={{ marginBottom: 10 }}>
+          <button
+            type="button"
+            onClick={() => navigate('/clientes')}
+            style={backButtonStyle}
+          >
+            ← Voltar para Clientes
+          </button>
+        </div>
+        <h2 style={{ textAlign: 'center', marginTop: 0, marginBottom: 20 }}>Novo Cliente</h2>
+
+        <div style={bloco}>
+          <div className="cliente-photo-field">
+            <ClientePhotoZoom
+              nome={form.nome}
+              src={fotoPreview}
+              size={112}
+              className="cliente-photo-field__preview"
+            />
+            <div className="cliente-photo-field__content">
+              <span className="cliente-photo-field__title">Foto do cliente</span>
+              <input
+                ref={fotoInputRef}
+                type="file"
+                accept={CLIENT_PHOTO_ACCEPT}
+                onChange={selecionarFoto}
+                hidden
+              />
+              <div className="cliente-photo-field__actions">
+                <button
+                  type="button"
+                  className="cliente-photo-button"
+                  onClick={() => fotoInputRef.current?.click()}
+                  disabled={salvando || processandoFoto}
+                >
+                  {processandoFoto
+                    ? 'Preparando foto...'
+                    : fotoArquivo
+                      ? 'Trocar foto'
+                      : 'Selecionar foto'}
+                </button>
+                {fotoArquivo ? (
+                  <button
+                    type="button"
+                    className="cliente-photo-button cliente-photo-button--danger"
+                    onClick={removerFotoSelecionada}
+                    disabled={salvando || processandoFoto}
+                  >
+                    Remover foto
+                  </button>
+                ) : null}
+              </div>
+              <p className="cliente-photo-field__help">
+                {processandoFoto
+                  ? 'Otimizando a imagem selecionada...'
+                  : fotoArquivo
+                    ? `${fotoNomeOriginal} - ${formatarTamanhoFoto(fotoArquivo.size)}`
+                    : 'Selecione uma imagem; fotos grandes serão otimizadas.'}
+              </p>
+            </div>
+          </div>
+        </div>
 
         {/* ID opcional */}
         <div style={{ marginBottom: 20 }}>
@@ -256,12 +426,12 @@ export default function NovoCliente() {
             pattern="\d*"
           />
           <div style={helperTextStyle}>Se deixar em branco, o sistema gera o ID automaticamente.</div>
-          {idExiste && <div style={avisoId}>❌ Esse ID já existe! Escolha outro.</div>}
+          {idExiste && <div style={avisoId}>Esse ID já existe. Escolha outro.</div>}
         </div>
 
         {/* Dados Pessoais */}
         <div style={bloco}>
-          <h4 style={{ marginTop: 0, marginBottom: 10 }}>👤 Dados Pessoais</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>Dados Pessoais</h4>
 
           <label style={labelStyle}>Nome</label>
           <input
@@ -281,11 +451,83 @@ export default function NovoCliente() {
           />
           {cpfExiste && (
             <div style={{ color: 'red', marginTop: 4 }}>
-              ❌ CPF já cadastrado no sistema.
+              CPF já cadastrado no sistema.
             </div>
           )}
 
-          <label style={labelStyle}>Telefone</label>
+          <div
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              marginBottom: 6,
+            }}
+          >
+            <span style={labelStyle}>Telefone</span>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    ddd: '064',
+                  }))
+                }
+                onMouseEnter={() => setHoverQuick('ddd-064')}
+                onMouseLeave={() => setHoverQuick(null)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border-soft)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-main)',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                  boxShadow:
+                    hoverQuick === 'ddd-064'
+                      ? '0 6px 16px rgba(37, 99, 235, 0.25)'
+                      : 'none',
+                  transform: hoverQuick === 'ddd-064' ? 'translateY(-1px)' : 'none',
+                  transition: 'box-shadow 120ms ease, transform 120ms ease',
+                }}
+              >
+                064
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    ddd: '062',
+                  }))
+                }
+                onMouseEnter={() => setHoverQuick('ddd-062')}
+                onMouseLeave={() => setHoverQuick(null)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border-soft)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-main)',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                  boxShadow:
+                    hoverQuick === 'ddd-062'
+                      ? '0 6px 16px rgba(37, 99, 235, 0.25)'
+                      : 'none',
+                  transform: hoverQuick === 'ddd-062' ? 'translateY(-1px)' : 'none',
+                  transition: 'box-shadow 120ms ease, transform 120ms ease',
+                }}
+              >
+                062
+              </button>
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <input
               name="ddd"
@@ -306,9 +548,85 @@ export default function NovoCliente() {
 
         {/* Endereço */}
         <div style={bloco}>
-          <h4 style={{ marginTop: 0, marginBottom: 10 }}>🏠 Endereço</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>Endereço</h4>
 
-          <label style={labelStyle}>Cidade</label>
+          <div
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              marginBottom: 6,
+            }}
+          >
+            <span style={labelStyle}>Cidade</span>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    cidade: 'Itumbiara',
+                    cidadeLivre: '',
+                  }))
+                }
+                onMouseEnter={() => setHoverQuick('cidade-itumbiara')}
+                onMouseLeave={() => setHoverQuick(null)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border-soft)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-main)',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                  boxShadow:
+                    hoverQuick === 'cidade-itumbiara'
+                      ? '0 6px 16px rgba(37, 99, 235, 0.25)'
+                      : 'none',
+                  transform:
+                    hoverQuick === 'cidade-itumbiara' ? 'translateY(-1px)' : 'none',
+                  transition: 'box-shadow 120ms ease, transform 120ms ease',
+                }}
+              >
+                Itumbiara
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setForm((prev) => ({
+                    ...prev,
+                    cidade: 'Araporã',
+                    cidadeLivre: '',
+                  }))
+                }
+                onMouseEnter={() => setHoverQuick('cidade-arapora')}
+                onMouseLeave={() => setHoverQuick(null)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid var(--border-soft)',
+                  background: 'var(--bg-card)',
+                  color: 'var(--text-main)',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                  boxShadow:
+                    hoverQuick === 'cidade-arapora'
+                      ? '0 6px 16px rgba(37, 99, 235, 0.25)'
+                      : 'none',
+                  transform:
+                    hoverQuick === 'cidade-arapora' ? 'translateY(-1px)' : 'none',
+                  transition: 'box-shadow 120ms ease, transform 120ms ease',
+                }}
+              >
+                Araporã
+              </button>
+            </div>
+          </div>
           <input
             list="cidades"
             name="cidade"
@@ -365,7 +683,7 @@ export default function NovoCliente() {
               onChange={handleChange}
               style={{ marginRight: 6 }}
             />
-            🏢 Mora em prédio
+            Mora em prédio
           </label>
 
           {form.emPredio && (
@@ -397,7 +715,7 @@ export default function NovoCliente() {
 
         {/* Trabalho */}
         <div style={bloco}>
-          <h4 style={{ marginTop: 0, marginBottom: 10 }}>💼 Trabalho</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>Trabalho</h4>
 
           <input
             name="empresa"
@@ -405,6 +723,13 @@ export default function NovoCliente() {
             onChange={handleChange}
             placeholder="Nome da empresa"
             style={fieldStyle}
+          />
+          <input
+            name="categoriaTrabalho"
+            value={form.categoriaTrabalho}
+            onChange={handleChange}
+            placeholder="Categoria de trabalho"
+            style={{ ...fieldStyle, marginTop: 8 }}
           />
           <input
             name="ruaEmpresa"
@@ -438,7 +763,7 @@ export default function NovoCliente() {
 
         {/* Extras */}
         <div style={bloco}>
-          <h4 style={{ marginTop: 0, marginBottom: 10 }}>📝 Extras</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>Extras</h4>
 
           <label style={labelStyle}>Referência</label>
           <input
@@ -459,7 +784,7 @@ export default function NovoCliente() {
 
         {/* Data */}
         <div style={bloco}>
-          <h4 style={{ marginTop: 0, marginBottom: 10 }}>📅 Data de Cadastro</h4>
+          <h4 style={{ marginTop: 0, marginBottom: 10 }}>Data de Cadastro</h4>
           <input
             name="criadoEm"
             type="date"
@@ -470,8 +795,16 @@ export default function NovoCliente() {
         </div>
 
         <div style={{ marginTop: 20 }}>
-          <button onClick={salvar} style={primaryButtonStyle}>
-            Cadastrar Cliente
+          <button
+            onClick={salvar}
+            style={primaryButtonStyle}
+            disabled={salvando || processandoFoto}
+          >
+            {processandoFoto
+              ? 'Preparando foto...'
+              : salvando
+                ? 'Salvando...'
+                : 'Cadastrar Cliente'}
           </button>
         </div>
       </div>

@@ -17,7 +17,8 @@ export default function Parcelas({ emprestimoId }) {
   }, [emprestimoId]);
 
   const carregarParcelas = () => {
-    axios.get(`http://localhost:3001/parcelas/${emprestimoId}`)
+    axios
+      .get(`/parcelas/${emprestimoId}`)
       .then(res => setParcelas(res.data))
       .catch(err => console.error(err));
   };
@@ -32,11 +33,11 @@ export default function Parcelas({ emprestimoId }) {
       return;
     }
 
-    axios.post('http://localhost:3001/parcelas', {
+    axios.post('/parcelas', {
       emprestimo_id: emprestimoId,
       numero,
-      valor_capital,    // corrigido aqui
-      valor_juros,      // corrigido aqui
+      valor_capital,
+      valor_juros,
       vencimento,
       observacao: nova.observacao || ''
     }).then(() => {
@@ -52,7 +53,6 @@ export default function Parcelas({ emprestimoId }) {
     const parcelaAtual = parcelas.find(p => p.id === id);
     if (!parcelaAtual) return;
 
-    // Mapear para o nome correto do campo no backend:
     const campoBackendMap = {
       capital: 'valor_capital',
       juros: 'valor_juros',
@@ -61,25 +61,108 @@ export default function Parcelas({ emprestimoId }) {
       observacao: 'observacao',
       valor_pago: 'valor_pago',
       data_pagamento: 'data_pagamento',
-      juros_adicionais: 'juros_adicionais',
+      juros_pendentes: 'juros_pendentes',
     };
 
-    // Montar dados somente para o campo alterado
+    const campoBackend = campoBackendMap[campo];
+    if (!campoBackend) return;
+
     const dadosAtualizados = {
-      [campoBackendMap[campo]]: valor
+      [campoBackend]: valor
     };
 
-    axios.put(`http://localhost:3001/parcelas/${id}`, dadosAtualizados)
+    axios
+      .put(`/parcelas/${id}`, dadosAtualizados)
       .then(() => carregarParcelas())
       .catch(err => console.error(err));
   };
 
+  /**
+   * Regra de mudança de vencimento com opção de "empurrar todas".
+   *
+   * Agora:
+   * - Se NÃO mudou mês/ano E não há colisão com outro vencimento -> single
+   * - Se mudou mês/ano OU caiu num mês/ano onde já existe outra parcela,
+   *   e existem parcelas posteriores -> pergunta se quer cascade
+   */
+  const handleVencimentoChange = (parcela, novaDataISO) => {
+    if (!novaDataISO) {
+      atualizarParcela(parcela.id, 'vencimento', '');
+      return;
+    }
+
+    const novaData = new Date(novaDataISO);
+    if (isNaN(novaData.getTime())) {
+      notify.error('Data inválida.');
+      return;
+    }
+
+    const antigo = parcela.vencimento ? new Date(parcela.vencimento) : null;
+
+    const novoMes = novaData.getMonth();
+    const novoAno = novaData.getFullYear();
+    const antigoMes = antigo ? antigo.getMonth() : null;
+    const antigoAno = antigo ? antigo.getFullYear() : null;
+
+    const mudouMesOuAno =
+      antigoMes === null ||
+      antigoAno === null ||
+      antigoMes !== novoMes ||
+      antigoAno !== novoAno;
+
+    // existe parcela NO MESMO MÊS/ANO (mesmo empréstimo, outra parcela)?
+    const existeNoMesmoMesAno = parcelas.some((p) => {
+      if (!p || p.id === parcela.id) return false;
+      if (p.emprestimo_id !== parcela.emprestimo_id) return false;
+      if (!p.vencimento) return false;
+      const d = new Date(p.vencimento);
+      if (isNaN(d.getTime())) return false;
+      return d.getMonth() === novoMes && d.getFullYear() === novoAno;
+    });
+
+    // há parcelas posteriores neste empréstimo?
+    const haProximas = parcelas.some((p) => {
+      if (!p) return false;
+      if (p.emprestimo_id !== parcela.emprestimo_id) return false;
+      return Number(p.numero) > Number(parcela.numero);
+    });
+
+    let modo = 'single';
+
+    // Só faz sentido oferecer cascade se tiver próximas
+    if (haProximas && (mudouMesOuAno || existeNoMesmoMesAno)) {
+      const querCascade = window.confirm(
+        'Detectamos que este novo vencimento pode impactar as próximas parcelas.\n\n' +
+        'OK = Empurrar esta e TODAS as próximas parcelas NÃO PAGAS em +1 mês, +2 meses, etc.\n' +
+        'Cancelar = Alterar somente esta parcela.'
+      );
+      modo = querCascade ? 'cascade' : 'single';
+    }
+
+    axios.post(`/parcelas/${parcela.id}/reagendar`, {
+      novaDataISO,
+      modo,
+    })
+      .then(() => {
+        carregarParcelas();
+        if (modo === 'cascade') {
+          notify.success('Vencimentos reagendados em cascata com sucesso.');
+        } else {
+          notify.success('Vencimento atualizado.');
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        notify.error('Erro ao reagendar vencimento.');
+      });
+  };
+
   return (
     <div style={{ marginTop: 20 }}>
-      <h3>📆 Parcelas do Empréstimo</h3>
+      <h3>Parcelas do Empréstimo</h3>
 
       <div style={{ marginBottom: 20, padding: 10, background: '#f1f1f1', borderRadius: 6 }}>
-        <h4>➕ Nova Parcela</h4>
+        <h4>Nova Parcela</h4>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <input
             type="number"
@@ -116,32 +199,43 @@ export default function Parcelas({ emprestimoId }) {
 
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {parcelas.map(parcela => (
-          <li key={parcela.id} style={{ marginBottom: 10, background: '#fafafa', padding: 10, borderRadius: 6 }}>
+          <li
+            key={parcela.id}
+            style={{
+              marginBottom: 10,
+              background: '#fafafa',
+              padding: 10,
+              borderRadius: 6
+            }}
+          >
             <div><strong>Parcela {parcela.numero}</strong></div>
-            <div>💸 Capital:
+            <div>
+              Capital:
               <input
                 type="number"
                 value={parcela.valor_capital || ''}
                 onChange={e => atualizarParcela(parcela.id, 'capital', e.target.value)}
               />
             </div>
-            <div>📈 Juros:
+            <div>
+              Juros:
               <input
                 type="number"
                 value={parcela.valor_juros || ''}
                 onChange={e => atualizarParcela(parcela.id, 'juros', e.target.value)}
               />
             </div>
-            <div>📅 Vencimento:
+            <div>
+              Vencimento:
               <input
                 type="date"
                 value={parcela.vencimento ? parcela.vencimento.substring(0, 10) : ''}
-                onChange={e => atualizarParcela(parcela.id, 'vencimento', e.target.value)}
+                onChange={e => handleVencimentoChange(parcela, e.target.value)}
               />
             </div>
 
             <div>
-              ✅ Pago:{' '}
+              Pago:{' '}
               <input
                 type="checkbox"
                 checked={!!parcela.pago}
@@ -150,7 +244,7 @@ export default function Parcelas({ emprestimoId }) {
             </div>
 
             <div>
-              💰 Valor pago:
+              Valor pago:
               <input
                 type="number"
                 value={parcela.valor_pago || ''}
@@ -160,7 +254,7 @@ export default function Parcelas({ emprestimoId }) {
             </div>
 
             <div>
-              📆 Data do pagamento:
+              Data do pagamento:
               <input
                 type="date"
                 value={parcela.data_pagamento || ''}
@@ -169,17 +263,17 @@ export default function Parcelas({ emprestimoId }) {
             </div>
 
             <div>
-              🔺 Juros adicionais:
+              Juros pendentes:
               <input
                 type="number"
-                value={parcela.juros_adicionais || ''}
+                value={parcela.juros_pendentes || ''}
                 placeholder="R$"
-                onChange={e => atualizarParcela(parcela.id, 'juros_adicionais', e.target.value)}
+                onChange={e => atualizarParcela(parcela.id, 'juros_pendentes', e.target.value)}
               />
             </div>
 
             <div>
-              📝 Observação:
+              Observação:
               <input
                 type="text"
                 value={parcela.observacao}

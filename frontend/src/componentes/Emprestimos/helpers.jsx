@@ -20,6 +20,54 @@ export const pad = (n) => String(n).padStart(2, "0");
 export const formatarMoeda = (v) =>
   Number(v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
+export const toNum = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+export const getTotalDevidoParcela = (parcela = {}) => {
+  const baseTotal = toNum(parcela.valor_total);
+  const adic = toNum(parcela.juros_adicionais);
+  if (baseTotal > 0 || adic > 0) return baseTotal + adic;
+
+  const capital = toNum(parcela.valor_capital);
+  const jurosBase = toNum(parcela.valor_juros);
+  const pend = toNum(parcela.juros_pendentes);
+  return capital + jurosBase + pend + adic;
+};
+
+export const renderLinhaJuros = (parcela = {}, formatFn = formatarMoeda, opts = {}) => {
+  const fmt = typeof formatFn === "function" ? formatFn : formatarMoeda;
+  const capital = fmt(toNum(parcela.valor_capital));
+  const jurosBase = fmt(toNum(parcela.valor_juros));
+  const jurosPendentesRaw = toNum(parcela.juros_pendentes);
+  const jurosPendentes = jurosPendentesRaw > 0 ? fmt(jurosPendentesRaw) : null;
+  const jurosAdicionais = fmt(toNum(parcela.juros_adicionais));
+  const renderAdic = opts.renderJurosAdicionais;
+  const renderPend = opts.renderJurosPendentes;
+
+  return (
+    <>
+      Capital: <strong>{capital}</strong>{" | "}
+      Juros: <strong>{jurosBase}</strong>
+      {jurosPendentes ? (
+        <>
+          {" + "}
+          {renderPend ? renderPend(jurosPendentes) : <strong>{jurosPendentes}</strong>}
+        </>
+      ) : null}
+      {" | "}
+      {renderAdic ? (
+        renderAdic(jurosAdicionais)
+      ) : (
+        <>
+          Juros Adicionais: <strong>{jurosAdicionais}</strong>
+        </>
+      )}
+    </>
+  );
+};
+
 export const toDateObj = (d) => {
   if (!d) return null;
   if (d instanceof Date) return isNaN(d.getTime()) ? null : d;
@@ -41,6 +89,84 @@ export const toDateObj = (d) => {
   return isNaN(dt.getTime()) ? null : dt;
 };
 
+export const normalizarDetalhesReneg = (detalhes) => {
+  if (!detalhes) return null;
+  if (typeof detalhes === "object") return detalhes;
+  if (typeof detalhes === "string") {
+    try {
+      return JSON.parse(detalhes);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+export const extrairValorAdicionar = (detalhes) => {
+  const det = normalizarDetalhesReneg(detalhes);
+  if (!det) return null;
+  const raw =
+    det.valor_adicionar ?? det.valor_adicionado ?? det.valorAdicionar ?? null;
+  if (raw == null) return null;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+};
+
+export const obterComposicaoValorEmprestado = (emp) => {
+  const historicos = Array.isArray(emp?.renegociacoesHistorico)
+    ? emp.renegociacoesHistorico
+    : [];
+
+  const historicosAdd = historicos.filter((h) => {
+    const det = normalizarDetalhesReneg(h?.detalhes);
+    const temValor =
+      det &&
+      (det.valor_adicionar != null ||
+        det.valor_adicionado != null ||
+        det.valorAdicionar != null);
+    const tipo = String(h?.tipo || "").toLowerCase();
+    return tipo === "adicionar_capital" || temValor;
+  });
+
+  const addicoes = historicosAdd
+    .map((h) => extrairValorAdicionar(h?.detalhes))
+    .filter((v) => Number.isFinite(v) && v > 0);
+
+  const primeiroAdd = historicosAdd.length ? historicosAdd[0] : null;
+  const snap = primeiroAdd?.snapshot_emprestimo || null;
+  const baseSnap =
+    snap?.valor_emprestado ??
+    snap?.valor_original ??
+    snap?.valor_inicial ??
+    snap?.valor_atual ??
+    snap?.valor ??
+    null;
+
+  let base = Number(baseSnap);
+  if (!Number.isFinite(base) || base <= 0) {
+    const baseEmp =
+      emp?.valor_emprestado ??
+      emp?.valor_original ??
+      emp?.valor_inicial ??
+      emp?.valor_atual ??
+      emp?.valor ??
+      0;
+    base = Number(baseEmp);
+    if (Number.isFinite(base) && addicoes.length > 0) {
+      const somaAdd = addicoes.reduce((s, v) => s + v, 0);
+      if (base - somaAdd > 0) {
+        base = base - somaAdd;
+      }
+    }
+  }
+
+  const composicao = [base, ...addicoes].filter(
+    (v) => Number.isFinite(v) && v > 0
+  );
+
+  return composicao;
+};
+
 export const formatarData = (d) => {
   const dt = toDateObj(d);
   if (!dt) return "-";
@@ -51,6 +177,67 @@ export const dataParaInput = (d) => {
   const dt = toDateObj(d);
   if (!dt) return "";
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+};
+
+export const addMonthsAdjust = (date, months) => {
+  const base = date instanceof Date ? new Date(date.getTime()) : toDateObj(date);
+  if (!base || isNaN(base.getTime())) return null;
+  const targetMonth = base.getMonth() + months;
+  const y = base.getFullYear() + Math.floor(targetMonth / 12);
+  const m = ((targetMonth % 12) + 12) % 12;
+  const day = base.getDate();
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  return new Date(y, m, Math.min(day, lastDay));
+};
+
+export const formatarDataCurta = (d) => {
+  const dt = toDateObj(d);
+  if (!dt) return "";
+  return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()}`;
+};
+
+export const calcularPreviewParcelas = ({
+  total,
+  parcelas,
+  taxaPercent,
+  primeiroVencimento,
+  placeholderVencimento = "dd mm aaaa",
+}) => {
+  const totalNum = Number(total);
+  const m = parseInt(parcelas || "0", 10);
+  const taxaNum = Number(taxaPercent);
+
+  if (!m || m <= 0 || !Number.isFinite(totalNum) || totalNum <= 0) return [];
+
+  const taxa = Number.isFinite(taxaNum) ? taxaNum / 100 : 0;
+  let saldo = totalNum;
+  const preview = [];
+
+  const firstDue = primeiroVencimento ? toDateObj(primeiroVencimento) : null;
+
+  for (let i = 1; i <= m; i++) {
+    const amort = totalNum / m;
+    const jurosVal = saldo * taxa;
+    const valorParc = amort + jurosVal;
+
+    let vencFormatado = placeholderVencimento;
+    if (firstDue) {
+      const venc = i === 1 ? firstDue : addMonthsAdjust(firstDue, i - 1);
+      vencFormatado = formatarDataCurta(venc);
+    }
+
+    preview.push({
+      numero: i,
+      amortizacao: isNaN(amort) ? 0 : amort,
+      juros: isNaN(jurosVal) ? 0 : jurosVal,
+      total: isNaN(valorParc) ? 0 : valorParc,
+      vencimento: vencFormatado,
+    });
+
+    saldo -= amort;
+  }
+
+  return preview;
 };
 
 export const calcularTempoPassado = (dataInicio) => {
@@ -83,7 +270,10 @@ export const calcularTempoPassado = (dataInicio) => {
 
 const monthAlternatives = mesesNome.join("|");
 
-export const renderHighlightedText = (text) => {
+export const renderHighlightedText = (text, opts = {}) => {
+  const boldCurrency = opts.boldCurrency !== false;
+  const currencyWeight =
+    typeof opts.currencyWeight === "number" ? opts.currencyWeight : 800;
   if (!text) return null;
   const original = String(text);
   const dateSlashRe = /\b\d{1,2}\/\d{1,2}\/\d{4}\b/g;
@@ -134,7 +324,17 @@ export const renderHighlightedText = (text) => {
       const dt = toDateObj(m.text);
       rendered = dt ? formatarData(dt) : m.text;
     } else if (m.type === "dateWord") rendered = m.text;
-    nodes.push(<strong key={`h${k++}`}>{rendered}</strong>);
+      if (m.type === "currency" && !boldCurrency) {
+        nodes.push(<span key={`h${k++}`}>{rendered}</span>);
+      } else {
+        const strongStyle =
+          m.type === "currency" ? { fontWeight: currencyWeight } : undefined;
+        nodes.push(
+          <strong key={`h${k++}`} style={strongStyle}>
+            {rendered}
+          </strong>
+        );
+      }
     cur = m.i + m.len;
   }
   if (cur < original.length)

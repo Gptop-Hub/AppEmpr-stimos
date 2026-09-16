@@ -1,4 +1,6 @@
 # dependências
+.test-lab/
+
 node_modules/
 frontend/node_modules/
 
@@ -14,6 +16,14 @@ frontend/node_modules/.vite/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# segredos locais
+.env
+.env.*
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
 
 # banco local (não publicar dados!)
 backend/models/data/

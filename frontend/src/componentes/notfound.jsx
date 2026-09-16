@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 export default function NotFound() {
   return (
     <div style={{ padding: 16, fontFamily: 'Segoe UI, sans-serif' }}>
-      <h2>😕 Página não encontrada</h2>
+      <h2>Página não encontrada</h2>
       <p style={{ color: '#6b7280' }}>
         O caminho que você acessou não existe. Use o menu ou clique abaixo:
       </p>

@@ -78,6 +78,10 @@ const notify = {
       defaultValue: opts.defaultValue,
       placeholder: opts.placeholder,
       type: opts.type,
+      inputMode: opts.inputMode,
+      pattern: opts.pattern,
+      maxLength: opts.maxLength,
+      sanitize: opts.sanitize,
     });
   },
 };

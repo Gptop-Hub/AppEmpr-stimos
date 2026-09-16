@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/assistente_orquestrador_regressao.test.js tests/assistente_memoria_semantica.test.js tests/assistente_repo_read_tools.test.js tests/assistente_orquestrador_repo_read.test.js tests/assistente_fase3.test.js tests/assistente_actions_gateway.test.js tests/assistente_action_idempotency.test.js tests/assistente_action_proposal.test.js tests/assistente_action_draft.test.js tests/assistente_action_interest.test.js tests/assistente_action_manual.test.js tests/assistente_action_discount_next.test.js tests/assistente_action_settle_loan.test.js tests/assistente_action_renegotiation.test.js tests/systemPurgeService.test.js tests/recebimentosPrevistosQuery.test.js tests/caixaPeriodoRange.test.js tests/backendRuntime.test.js tests/painelPeriodoService.test.js tests/notificacoesCobranca.test.js tests/backupBundleService.test.js tests/backupFotosIntegration.test.js"
   },
   "keywords": [],
   "author": "",

@@ -2,8 +2,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import notify from '../ui/notify';
+import { API_BASE_URL } from '../axios-setup.js';
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = API_BASE_URL;
 
 export default function Backup() {
   const [status, setStatus] = useState('');
@@ -22,6 +23,18 @@ export default function Backup() {
     const headers = {};
     if (BACKUP_KEY) headers['x-backup-key'] = BACKUP_KEY;
     return headers;
+  };
+
+  const mensagemErro = async (err, fallback) => {
+    let data = err?.response?.data;
+    if (data instanceof Blob) {
+      try {
+        data = JSON.parse(await data.text());
+      } catch {
+        data = null;
+      }
+    }
+    return data?.error || err?.message || fallback;
   };
 
   const carregarDiagnostico = async () => {
@@ -62,7 +75,7 @@ export default function Backup() {
       const url = `${API_BASE}/backup/download`;
       const resp = await axios.get(url, { responseType: 'blob', headers: buildHeaders() });
 
-      let filename = 'emprestimos-backup.db';
+      let filename = 'emprestimos-backup.emprestimos-backup';
       const cd = resp.headers['content-disposition'];
       if (cd) {
         const match = cd.match(/filename="?([^"]+)"?/);
@@ -78,11 +91,12 @@ export default function Backup() {
       link.remove();
 
       setStatus('Download concluído.');
-      notify.success('Backup baixado com sucesso.');
+      const totalFotos = Number(resp.headers['x-backup-photo-count'] || 0);
+      notify.success(`Backup completo baixado com ${totalFotos} foto(s).`);
     } catch (err) {
       console.error(err);
       setStatus('Erro ao gerar download do backup.');
-      notify.error('Erro ao gerar backup. Veja console.');
+      notify.error(await mensagemErro(err, 'Erro ao gerar o backup completo.'));
     }
   };
 
@@ -109,7 +123,7 @@ export default function Backup() {
       setUltimoRestoreInfo(resp.data || null);
 
       setStatus('Restauração concluída. Reinicie o app para recarregar os dados.');
-      notify.success(resp.data?.message || 'Banco restaurado no servidor.');
+      notify.success(resp.data?.message || 'Backup restaurado no sistema.');
       notify.info('Feche e reabra o aplicativo para garantir que o backend recarregou o banco.');
 
       await carregarDiagnostico();
@@ -117,7 +131,7 @@ export default function Backup() {
     } catch (err) {
       console.error(err);
       setStatus('Erro ao enviar restauração.');
-      notify.error('Erro ao restaurar backup. Veja console do navegador e do servidor.');
+      notify.error(await mensagemErro(err, 'Erro ao restaurar o backup.'));
     }
   };
 
@@ -125,25 +139,25 @@ export default function Backup() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Ações */}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button onClick={baixarLocal} style={{ padding: 8 }}>Salvar local</button>
+        <button onClick={baixarLocal} style={{ padding: 8 }}>Salvar backup completo</button>
 
         <input
           ref={fileInputRef}
           type="file"
-          accept=".db,.sqlite,.sqlite3"
+          accept=".emprestimos-backup,.db,.sqlite,.sqlite3,application/octet-stream"
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files && e.target.files[0];
             if (f) restaurarDoArquivo(f);
           }}
         />
-        <button onClick={abrirSeletorArquivo} style={{ padding: 8 }}>Restaurar (upload)</button>
+        <button onClick={abrirSeletorArquivo} style={{ padding: 8 }}>Restaurar backup</button>
 
         <span style={{ marginLeft: 12 }}>{status}</span>
       </div>
 
       {/* Diagnóstico /health */}
-      <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: 820 }}>
+      <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: '100%' }}>
         <strong>Diagnóstico (/health)</strong>
         <div style={{ marginTop: 6 }}>
           dbPath: <code>{diagnostico?.dbPath || '...'}</code>
@@ -166,7 +180,7 @@ export default function Backup() {
       </div>
 
       {/* Estado do banco /backup/now */}
-      <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: 820 }}>
+      <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: '100%' }}>
         <strong>Estado do banco (/backup/now)</strong>
         <div style={{ marginTop: 6 }}>
           dbPath: <code>{estadoBanco?.dbPath || '...'}</code>
@@ -179,7 +193,7 @@ export default function Backup() {
         <div style={{ marginTop: 6 }}>
           <em>Contagens</em> —{' '}
           {estadoBanco?.contagens
-            ? `Clientes: ${estadoBanco.contagens.clientes} • Empréstimos: ${estadoBanco.contagens.emprestimos} • Parcelas: ${estadoBanco.contagens.parcelas} • Pagamentos: ${estadoBanco.contagens.pagamentos}`
+            ? `Clientes: ${estadoBanco.contagens.clientes} • Empréstimos: ${estadoBanco.contagens.emprestimos} • Parcelas: ${estadoBanco.contagens.parcelas} • Pagamentos: ${estadoBanco.contagens.pagamentos} • Fotos: ${estadoBanco.contagens.fotos ?? 0}`
             : '...'}
         </div>
         <button
@@ -193,7 +207,7 @@ export default function Backup() {
 
       {/* Resultado do último restore */}
       {ultimoRestoreInfo && (
-        <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: 820 }}>
+        <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: '100%' }}>
           <strong>Último restore</strong>
           <div style={{ marginTop: 6 }}>
             {ultimoRestoreInfo.message || '—'}
@@ -201,17 +215,18 @@ export default function Backup() {
           <div style={{ marginTop: 6 }}>
             dbPath: <code>{ultimoRestoreInfo.dbPath || '...'}</code>
           </div>
-          {ultimoRestoreInfo.backupOfPreviousDb && (
-            <div>backup anterior: <code>{ultimoRestoreInfo.backupOfPreviousDb}</code></div>
+          {ultimoRestoreInfo.backupOfPreviousState && (
+            <div>backup anterior: <code>{ultimoRestoreInfo.backupOfPreviousState}</code></div>
           )}
+          <div>fotos restauradas: <strong>{Number(ultimoRestoreInfo.photosRestored || 0)}</strong></div>
           <div style={{ marginTop: 6 }}>
             upload: {ultimoRestoreInfo.uploaded
-              ? <code>{`${ultimoRestoreInfo.uploaded.path} • ${ultimoRestoreInfo.uploaded.size} bytes • sha1 ${ultimoRestoreInfo.uploaded.sha1}`}</code>
+              ? <code>{`${ultimoRestoreInfo.uploaded.name} • ${ultimoRestoreInfo.uploaded.size} bytes • sha256 ${ultimoRestoreInfo.uploaded.sha256}`}</code>
               : <code>...</code>}
           </div>
           <div>
             target: {ultimoRestoreInfo.target
-              ? <code>{`${ultimoRestoreInfo.target.size} bytes • sha1 ${ultimoRestoreInfo.target.sha1}`}</code>
+              ? <code>{`${ultimoRestoreInfo.target.size} bytes • sha256 ${ultimoRestoreInfo.target.sha256}`}</code>
               : <code>...</code>}
           </div>
         </div>

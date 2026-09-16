@@ -1,7 +1,12 @@
-// backend/controllers/emprestimosController.js
+﻿// backend/controllers/emprestimosController.js
 const emprestimoService = require('../services/servicoemprestimo');
 const gerarParcelas = require('../utils/gerarParcelas'); // usado no preview
 const db = require('../models/database'); // sqlite handle
+const { toISO, parseToDate } = require('../services/dateUtils');
+const { getPagamentosPorEmprestimo } = require('../services/parcelasService');
+const { touchAtividade } = require('../utils/touchAtividade');
+const { registrarSaidaEmprestimo } = require('../services/caixaService');
+const { runAsync, getAsync } = require('../utils/sqliteAsync');
 
 /**
  * Helpers locais de parsing
@@ -29,17 +34,37 @@ function isValidDateString(s) {
   return !Number.isNaN(d.getTime());
 }
 
+async function tableExists(tableName) {
+  const row = await getAsync(
+    db,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [tableName]
+  );
+  return !!row;
+}
+
+async function deleteIfTableExists(tableName, whereClause = '', params = []) {
+  const exists = await tableExists(tableName);
+  if (!exists) return 0;
+
+  const sql = whereClause
+    ? `DELETE FROM ${tableName} WHERE ${whereClause}`
+    : `DELETE FROM ${tableName}`;
+  const result = await runAsync(db, sql, params);
+  return Number(result?.changes || 0);
+}
+
 /**
  * GET /emprestimos
  */
 exports.listarTodos = async (req, res) => {
   try {
-    // Mantém comportamento atual (sem filtrar ativo). Podemos ajustar depois, se quiser.
+    // MantÃƒÂ©m comportamento atual (sem filtrar ativo). Podemos ajustar depois, se quiser.
     const emprestimos = await emprestimoService.listarTodosEmprestimos();
     res.json(emprestimos);
   } catch (error) {
     console.error('listarTodos erro:', error);
-    res.status(500).json({ error: error.message || 'Erro ao buscar empréstimos.' });
+    res.status(500).json({ error: error.message || 'Erro ao buscar emprÃƒÂ©stimos.' });
   }
 };
 
@@ -49,14 +74,14 @@ exports.listarTodos = async (req, res) => {
 exports.listarHistorico = async (req, res) => {
   try {
     if (typeof emprestimoService.listarEmprestimosQuitados !== 'function') {
-      console.error('listarHistorico: serviço listarEmprestimosQuitados não encontrado.');
-      return res.status(500).json({ error: 'Serviço de histórico não disponível.' });
+      console.error('listarHistorico: serviÃƒÂ§o listarEmprestimosQuitados nÃƒÂ£o encontrado.');
+      return res.status(500).json({ error: 'ServiÃƒÂ§o de histÃƒÂ³rico nÃƒÂ£o disponÃƒÂ­vel.' });
     }
     const quitados = await emprestimoService.listarEmprestimosQuitados();
     res.json(quitados);
   } catch (error) {
     console.error('listarHistorico erro:', error);
-    res.status(500).json({ error: error.message || 'Erro ao listar histórico.' });
+    res.status(500).json({ error: error.message || 'Erro ao listar histÃƒÂ³rico.' });
   }
 };
 
@@ -66,11 +91,11 @@ exports.listarHistorico = async (req, res) => {
 exports.buscarPorId = async (req, res) => {
   try {
     const emprestimo = await emprestimoService.buscarEmprestimoPorId(req.params.id);
-    if (!emprestimo) return res.status(404).json({ error: 'Empréstimo não encontrado.' });
+    if (!emprestimo) return res.status(404).json({ error: 'EmprÃƒÂ©stimo nÃƒÂ£o encontrado.' });
     res.json(emprestimo);
   } catch (error) {
     console.error('buscarPorId erro:', error);
-    res.status(500).json({ error: error.message || 'Erro ao buscar empréstimo.' });
+    res.status(500).json({ error: error.message || 'Erro ao buscar emprÃƒÂ©stimo.' });
   }
 };
 
@@ -80,13 +105,54 @@ exports.buscarPorId = async (req, res) => {
 exports.atualizar = async (req, res) => {
   try {
     const resultado = await emprestimoService.atualizarEmprestimo(req.params.id, req.body);
+    try {
+      await touchAtividade({
+        emprestimoId: req.params.id,
+        clienteId: req.body && req.body.cliente_id ? req.body.cliente_id : null
+      });
+    } catch (touchErr) {
+      console.error('[touchAtividade] emprestimo/update:', touchErr);
+    }
+    try {
+      await touchAtividade({
+        emprestimoId: resultado && resultado.id ? resultado.id : null,
+        clienteId: cliente_id
+      });
+    } catch (touchErr) {
+      console.error('[touchAtividade] emprestimo/create:', touchErr);
+    }
+    try {
+      const row = await new Promise((resolve) => {
+        db.get(
+          'SELECT emprestimo_id FROM parcelas WHERE id = ?',
+          [req.params.id],
+          (_err, data) => resolve(data || null)
+        );
+      });
+      await touchAtividade({
+        emprestimoId: row && row.emprestimo_id ? row.emprestimo_id : null
+      });
+    } catch (touchErr) {
+      console.error('[touchAtividade] parcela/vencimento:', touchErr);
+    }
     res.json(resultado);
   } catch (error) {
     console.error('atualizar erro:', error);
-    if (error.message === 'Campos obrigatórios ausentes.') {
-      return res.status(400).json({ error: error.message });
+    const msg = error && error.message ? String(error.message) : '';
+    if (
+      msg === 'Campos obrigatorios ausentes.' ||
+      msg === 'Campos obrigatÃ³rios ausentes.' ||
+      msg === 'Campos obrigatÃƒÂ³rios ausentes.' ||
+      msg === 'ID de emprestimo invalido.'
+    ) {
+      return res.status(400).json({ error: msg });
     }
-    res.status(500).json({ error: 'Erro ao atualizar empréstimo.' });
+    if (error && error.code === 'LOAN_EDIT_BLOCKED_AFTER_PAYMENT') {
+      return res.status(409).json({
+        error: 'Este emprestimo nao pode ser editado porque ja possui parcela paga.',
+      });
+    }
+    res.status(500).json({ error: 'Erro ao atualizar emprÃƒÂ©stimo.' });
   }
 };
 
@@ -107,25 +173,23 @@ exports.criar = async (req, res) => {
       data_pagamento: rawDataPagamento,
     } = req.body;
 
-    console.log('Criando empréstimo - payload recebido:', req.body);
+    console.log('Criando emprÃƒÂ©stimo - payload recebido:', req.body);
 
     const cliente_id = toIntegerSafe(rawClienteId);
     const valor = toNumberSafe(rawValor);
     const taxa_juros = toNumberSafe(rawTaxa);
     const parcelas = rawParcelas == null ? null : toIntegerSafe(rawParcelas);
-    const data = (typeof rawData === 'string')
-      ? rawData
-      : (rawData instanceof Date ? rawData.toISOString().split('T')[0] : null);
+    const data = toISO(rawData);
 
-    if (!cliente_id) return res.status(400).json({ error: 'cliente_id inválido ou ausente.' });
-    if (valor == null || valor <= 0) return res.status(400).json({ error: 'valor inválido ou ausente.' });
+    if (!cliente_id) return res.status(400).json({ error: 'cliente_id invÃƒÂ¡lido ou ausente.' });
+    if (valor == null || valor <= 0) return res.status(400).json({ error: 'valor invÃƒÂ¡lido ou ausente.' });
     if (!data || !isValidDateString(data)) {
-      return res.status(400).json({ error: 'data (início) inválida ou ausente. Use YYYY-MM-DD.' });
+      return res.status(400).json({ error: 'data (inÃƒÂ­cio) invÃƒÂ¡lida ou ausente. Use YYYY-MM-DD.' });
     }
     if (!modalidade) return res.status(400).json({ error: 'modalidade ausente.' });
     if (taxa_juros == null) return res.status(400).json({ error: 'taxa_juros ausente.' });
     if (modalidade === 'parcelado' && (parcelas == null || parcelas <= 0)) {
-      return res.status(400).json({ error: 'parcelas ausente ou inválida para modalidade parcelado.' });
+      return res.status(400).json({ error: 'parcelas ausente ou invÃƒÂ¡lida para modalidade parcelado.' });
     }
 
     // Determinar dia_pagamento / primeira data de pagamento
@@ -133,20 +197,23 @@ exports.criar = async (req, res) => {
     let primeiraDataPagamento = null;
 
     if (rawDataPagamento && typeof rawDataPagamento === 'string' && isValidDateString(rawDataPagamento)) {
-      const dtPag = new Date(rawDataPagamento);
-      primeiraDataPagamento = dtPag.toISOString().split('T')[0];
-      diaToSave = dtPag.getDate();
+      const dataPagISO = toISO(rawDataPagamento);
+      if (dataPagISO) {
+        primeiraDataPagamento = dataPagISO;
+        const dtPag = parseToDate(dataPagISO);
+        diaToSave = dtPag ? dtPag.getDate() : null;
+      }
     } else if (rawDiaPagamento != null && rawDiaPagamento !== '') {
       const parsed = toIntegerSafe(rawDiaPagamento);
       if (parsed != null) diaToSave = Math.min(31, Math.max(1, parsed));
     }
 
     if (diaToSave == null) {
-      const dt = new Date(data);
-      diaToSave = !Number.isNaN(dt.getTime()) ? dt.getDate() : 15;
+      const dt = parseToDate(data);
+      diaToSave = dt ? dt.getDate() : 15;
     }
 
-    // 👇 AQUI entra a separação: valor_emprestado e valor_atual começam iguais ao valor informado
+    // Ã°Å¸â€˜â€¡ AQUI entra a separaÃƒÂ§ÃƒÂ£o: valor_emprestado e valor_atual comeÃƒÂ§am iguais ao valor informado
     const dadosParaCriar = {
       cliente_id,
       valor,
@@ -163,14 +230,30 @@ exports.criar = async (req, res) => {
 
     console.log('Chamando servico.criarEmprestimo com:', dadosParaCriar);
     const resultado = await emprestimoService.criarEmprestimo(dadosParaCriar);
-    console.log('Empréstimo criado:', resultado);
+    console.log('EmprÃƒÂ©stimo criado:', resultado);
+    await registrarSaidaEmprestimo({
+      data: new Date(),
+      cliente_id,
+      emprestimo_id: resultado && resultado.id ? Number(resultado.id) : null,
+      valor_emprestimo: valor,
+      descricao: 'Emprestimo concedido',
+      meta: {
+        origem: '/emprestimos',
+        data_contrato: data || null,
+        modalidade: modalidade || null,
+        parcelas: parcelas != null ? Number(parcelas) : null,
+        taxa_juros: taxa_juros != null ? Number(taxa_juros) : null,
+      },
+    }).catch((caixaErr) => {
+      console.error('[caixa] erro ao registrar saida de emprestimo:', caixaErr);
+    });
     res.json(resultado);
   } catch (error) {
     console.error('criar erro:', error);
-    if (error.message === 'Campos obrigatórios ausentes.') {
+    if (error.message === 'Campos obrigatÃƒÂ³rios ausentes.') {
       return res.status(400).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message || 'Erro ao criar empréstimo.' });
+    res.status(500).json({ error: error.message || 'Erro ao criar emprÃƒÂ©stimo.' });
   }
 };
 
@@ -179,7 +262,7 @@ exports.criar = async (req, res) => {
  */
 exports.atualizarParcelaVencimento = async (req, res) => {
   try {
-    console.log('Recebendo requisição para atualizar vencimento - id:', req.params.id, 'body:', req.body);
+    console.log('Recebendo requisiÃƒÂ§ÃƒÂ£o para atualizar vencimento - id:', req.params.id, 'body:', req.body);
     const resultado = await emprestimoService.atualizarParcelaVencimento(
       req.params.id,
       req.body.vencimento
@@ -210,20 +293,23 @@ exports.previewParcelas = (req, res) => {
     const taxa_juros = toNumberSafe(rawTaxa);
     const qtdParcelas = toIntegerSafe(rawParcelas);
     const dataInicio = rawData && isValidDateString(rawData)
-      ? rawData
-      : (new Date()).toISOString().split('T')[0];
+      ? toISO(rawData)
+      : toISO(new Date());
 
     if (valor == null || taxa_juros == null || qtdParcelas == null) {
-      return res.status(400).json({ error: 'Parâmetros inválidos. Forneça valor, taxa_juros e parcelas.' });
+      return res.status(400).json({ error: 'ParÃƒÂ¢metros invÃƒÂ¡lidos. ForneÃƒÂ§a valor, taxa_juros e parcelas.' });
     }
 
     let primeiroVencimento = null;
     let diaPagamento = undefined;
 
     if (rawDataPagamento && typeof rawDataPagamento === 'string' && isValidDateString(rawDataPagamento)) {
-      const dtPag = new Date(rawDataPagamento);
-      primeiroVencimento = dtPag.toISOString().split('T')[0];
-      diaPagamento = dtPag.getDate();
+      const dataPagISO = toISO(rawDataPagamento);
+      if (dataPagISO) {
+        primeiroVencimento = dataPagISO;
+        const dtPag = parseToDate(dataPagISO);
+        diaPagamento = dtPag ? dtPag.getDate() : undefined;
+      }
     } else if (rawDiaPagamento != null && rawDiaPagamento !== '') {
       const parsed = toIntegerSafe(rawDiaPagamento);
       if (parsed != null) diaPagamento = parsed;
@@ -251,59 +337,126 @@ exports.previewParcelas = (req, res) => {
 exports.excluir = async (req, res) => {
   try {
     const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ error: 'ID inválido.' });
+    if (!id) return res.status(400).json({ error: 'ID inv\u00E1lido.' });
 
-    const provided = (req.body && req.body.password) ? String(req.body.password) : '';
-    const expected = process.env.ADMIN_PASSWORD || 'admin123';
+    await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
 
-    if (provided !== expected) {
-      return res.status(401).json({ error: 'Senha incorreta.' });
-    }
+    const removidos = {};
+    removidos.notificacoes = await deleteIfTableExists(
+      'notificacoes',
+      'emprestimo_id = ?',
+      [id]
+    );
+    removidos.caixa_movimentos = await deleteIfTableExists(
+      'caixa_movimentos',
+      'emprestimo_id = ?',
+      [id]
+    );
+    removidos.recalculos_atraso = await deleteIfTableExists(
+      'recalculos_atraso',
+      'emprestimo_id = ?',
+      [id]
+    );
+    removidos.renegociacoes_historico = await deleteIfTableExists(
+      'renegociacoes_historico',
+      'emprestimo_id = ?',
+      [id]
+    );
+    removidos.renegociacoes = await deleteIfTableExists(
+      'renegociacoes',
+      'antigo_id = ? OR novo_id = ?',
+      [id, id]
+    );
+    removidos.pagamentos = await deleteIfTableExists(
+      'pagamentos',
+      'emprestimo_id = ?',
+      [id]
+    );
+    removidos.parcelas_originais = await deleteIfTableExists(
+      'parcelas_originais',
+      'emprestimo_id = ?',
+      [id]
+    );
+    removidos.parcelas = await deleteIfTableExists(
+      'parcelas',
+      'emprestimo_id = ?',
+      [id]
+    );
 
-    db.serialize(() => {
-      db.run('BEGIN TRANSACTION');
-      db.run('DELETE FROM pagamentos WHERE emprestimo_id = ?', [id], (err) => {
-        if (err) {
-          console.error('Erro ao deletar pagamentos:', err);
-          db.run('ROLLBACK');
-          return res.status(500).json({ error: 'Erro ao excluir (pagamentos).' });
-        }
-
-        db.run('DELETE FROM parcelas WHERE emprestimo_id = ?', [id], (err2) => {
-          if (err2) {
-            console.error('Erro ao deletar parcelas:', err2);
-            db.run('ROLLBACK');
-            return res.status(500).json({ error: 'Erro ao excluir (parcelas).' });
-          }
-
-          db.run('DELETE FROM parcelas_originais WHERE emprestimo_id = ?', [id], (err3) => {
-            if (err3) {
-              console.error('Erro ao deletar parcelas_originais:', err3);
-              db.run('ROLLBACK');
-              return res.status(500).json({ error: 'Erro ao excluir (parcelas_originais).' });
-            }
-
-            db.run('DELETE FROM emprestimos WHERE id = ?', [id], function (err4) {
-              if (err4) {
-                console.error('Erro ao deletar emprestimo:', err4);
-                db.run('ROLLBACK');
-                return res.status(500).json({ error: 'Erro ao excluir empréstimo.' });
-              }
-
-              db.run('COMMIT', (cErr) => {
-                if (cErr) {
-                  console.error('Erro no COMMIT:', cErr);
-                  return res.status(500).json({ error: 'Erro ao finalizar exclusão.' });
-                }
-                return res.json({ mensagem: 'Empréstimo excluído com sucesso.', id });
-              });
-            });
-          });
-        });
-      });
-    });
+    await runAsync(db, 'DELETE FROM emprestimos WHERE id = ?', [id]);
+    await runAsync(db, 'COMMIT');
+    return res.json({ mensagem: 'Empr\u00E9stimo exclu\u00EDdo com sucesso.', id, removidos });
   } catch (error) {
+    try {
+      await runAsync(db, 'ROLLBACK');
+    } catch {}
     console.error('excluir erro:', error);
-    res.status(500).json({ error: 'Erro ao excluir empréstimo.' });
+    res.status(500).json({ error: 'Erro ao excluir empr\u00E9stimo.' });
   }
 };
+
+/**
+ * POST /emprestimos/reset-all (com senha)
+ * Remove TODO o conteÃºdo relacionado a emprÃ©stimos e mantÃ©m clientes intactos.
+ */
+exports.excluirTodos = async (req, res) => {
+  try {
+    await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
+    const removidos = {};
+
+    // DependÃªncias e histÃ³ricos ligados a emprÃ©stimos
+    removidos.notificacoes = await deleteIfTableExists(
+      'notificacoes',
+      "emprestimo_id IS NOT NULL OR parcela_id IS NOT NULL"
+    );
+    removidos.caixa_movimentos = await deleteIfTableExists(
+      'caixa_movimentos',
+      "emprestimo_id IS NOT NULL OR UPPER(COALESCE(categoria, '')) IN ('EMPRESTIMO', 'PAGAMENTO')"
+    );
+    removidos.pagamentos = await deleteIfTableExists('pagamentos');
+    removidos.parcelas_originais = await deleteIfTableExists('parcelas_originais');
+    removidos.parcelas = await deleteIfTableExists('parcelas');
+    removidos.renegociacoes_historico = await deleteIfTableExists('renegociacoes_historico');
+    removidos.renegociacoes = await deleteIfTableExists('renegociacoes');
+    removidos.emprestimos = await deleteIfTableExists('emprestimos');
+
+    await runAsync(db, 'COMMIT');
+    return res.json({
+      mensagem: 'Todos os emprestimos e dados relacionados foram excluidos.',
+      removidos,
+    });
+  } catch (error) {
+    try {
+      await runAsync(db, 'ROLLBACK');
+    } catch {}
+    console.error('excluirTodos erro:', error);
+    return res.status(500).json({
+      error: error && error.message ? error.message : 'Erro ao excluir todos os emprestimos.',
+    });
+  }
+};
+
+/**
+ * GET /emprestimos/:id/pagamentos
+ */
+exports.listarPagamentosPorEmprestimo = async (req, res) => {
+  const emprestimoId = Number(req.params.id);
+  if (!emprestimoId) {
+    return res.status(400).json({ success: false, error: 'ID invÃƒÂ¡lido' });
+  }
+
+  try {
+    const { pagamentos, total_pago } = await getPagamentosPorEmprestimo(emprestimoId);
+    return res.json({
+      success: true,
+      emprestimoId,
+      total_pago,
+      pagamentos: pagamentos || [],
+    });
+  } catch (error) {
+    console.error('listarPagamentosPorEmprestimo erro:', error);
+    res.status(500).json({ success: false, error: error.message || 'Erro ao listar pagamentos.' });
+  }
+};
+
+

@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import useManualLogic from './useManualLogic';
 import ResumoPagamento from './ResumoPagamento';
 import FormRenegociacao from './FormRenegociacao';
 import PreviewParcelas from './PreviewParcelas';
 
 export default function Manual(props) {
+  const [resumoAberto, setResumoAberto] = useState(false);
   const {
     valorTotal,
     emprestimo,
@@ -74,12 +75,48 @@ export default function Manual(props) {
         color: 'var(--text-main)',
       }}
     >
-      <h3 className="text-xl font-bold mb-4" style={{ color: 'var(--text-main)' }}>
-        💸 Renegociação
-      </h3>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <h3 className="text-xl font-bold" style={{ margin: 0, color: 'var(--text-main)' }}>
+          Renegociação
+        </h3>
+        {valorTotal > 0 && primeiraAberta ? (
+          <button
+            type="button"
+            onClick={() => setResumoAberto((aberto) => !aberto)}
+            aria-expanded={resumoAberto}
+            aria-controls="resumo-pagamento-manual"
+            title={resumoAberto ? 'Minimizar resumo do pagamento' : 'Mostrar resumo do pagamento'}
+            style={{
+              width: 30,
+              height: 30,
+              padding: 0,
+              borderRadius: 7,
+              border: '1px solid var(--border-soft)',
+              background: 'var(--bg-card)',
+              color: 'var(--text-main)',
+              cursor: 'pointer',
+              display: 'grid',
+              placeItems: 'center',
+              fontSize: 21,
+              lineHeight: 1,
+            }}
+          >
+            {resumoAberto ? '−' : '+'}
+          </button>
+        ) : null}
+      </div>
 
-      {valorTotal > 0 && primeiraAberta && (
+      {resumoAberto && valorTotal > 0 && primeiraAberta && (
         <div
+          id="resumo-pagamento-manual"
           style={{
             background: 'var(--bg-card)',
             border: '1px solid var(--border-soft)',
@@ -98,7 +135,7 @@ export default function Manual(props) {
               color: 'var(--text-main)',
             }}
           >
-            🧾 Resumo do pagamento
+            Resumo do pagamento
           </div>
 
           <ResumoPagamento
@@ -153,6 +190,7 @@ export default function Manual(props) {
       />
 
       <div
+        className="manual-modal-actions"
         style={{
           marginTop: 18,
           display: 'flex',

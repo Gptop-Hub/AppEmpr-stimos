@@ -1,9 +1,13 @@
 {
   "name": "app-emprestimos",
-  "version": "0.2.8",
+  "version": "0.6.17",
   "description": "Sistema de Empréstimos transformado em app desktop com Electron",
   "main": "main.js",
   "scripts": {
+    "seed:test": "node scripts/test-lab/import.cjs import",
+    "seed:test:clear": "node scripts/test-lab/import.cjs clear",
+    "seed:test:generate": "node scripts/test-lab/generate.cjs",
+    "seed:test:validate": "node scripts/test-lab/validate.cjs",
     "start": "electron .",
     "backend": "node backend/index.js",
     "frontend": "cd frontend && npm run dev",
@@ -13,7 +17,7 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
-    "publish:win": "npm run build:renderer && electron-builder --windows --publish always"
+    "publish:win": "node scripts/bump-version-before-publish.js && npm run build:renderer && electron-builder --windows --publish always"
   },
   "author": "Seu Nome",
   "license": "MIT",
@@ -44,23 +48,31 @@
     "files": [
       "main.js",
       "preload.js",
+      "splash.html",
+      "splash.css",
       "backend/**/*",
       "frontend/dist/**/*",
       "package.json",
       "!**/*.map",
+      "!scripts/test-lab{,/**/*}",
+      "!.test-lab{,/**/*}",
+      "!backend/tests{,/**/*}",
+      "!backend/models/data{,/**/*}",
+      "!**/emprestimos-data{,/**/*}",
+      "!**/dataset-v1.json",
+      "!**/*.lab-manifest.json",
       "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
     ],
     "asarUnpack": [
       "**/node_modules/sqlite3/**"
     ],
     "icon": "build/icon.ico",
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "Gptop-Hub",
-        "repo": "app-emprestimos"
-      }
-    ],
+    "publish": {
+      "provider": "github",
+      "owner": "Gptop-Hub",
+      "repo": "app-emprestimos",
+      "releaseType": "release"
+    },
     "win": {
       "target": [
         {

@@ -7,9 +7,13 @@
 //   - Garante coluna parcelas_originais.explicacao TEXT
 //   - Atualiza PRAGMA user_version = 1
 //
+// Extra (sempre que rodar):
+//   - Garante a existência da tabela notificacoes (CREATE TABLE IF NOT EXISTS)
+//
 // Se já estiver em 1 ou maior, só loga e não faz nada destrutivo.
 
 const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
 const path = require('path');
 const paths = require('../../utils/paths'); // saindo de models/migrations -> utils
 
@@ -60,6 +64,23 @@ function runSql(db, sql) {
   });
 }
 
+async function runSqlFileIfExists(db, fileName) {
+  const filePath = path.join(__dirname, fileName);
+  if (!fs.existsSync(filePath)) {
+    log(`Arquivo de migracao nao encontrado: ${fileName}. Ignorando.`);
+    return;
+  }
+
+  const sql = fs.readFileSync(filePath, 'utf8');
+  if (!String(sql || '').trim()) {
+    log(`Arquivo de migracao vazio: ${fileName}. Ignorando.`);
+    return;
+  }
+
+  await runSql(db, sql);
+  log(`Migracao aplicada via arquivo: ${fileName}`);
+}
+
 // --------- MIGRAÇÃO 0 -> 1 -----------------------------------------------
 
 async function migrateFrom0To1(db) {
@@ -88,6 +109,45 @@ async function migrateFrom0To1(db) {
   log('Migração 0 -> 1 concluída. user_version agora = 1.');
 }
 
+// --------- TABELA DE NOTIFICAÇÕES (sempre garantir) -----------------------
+
+async function ensureNotificacoesTable(db) {
+  log('Garantindo tabela notificacoes…');
+
+  // Aqui não precisa nem checar: CREATE TABLE IF NOT EXISTS já é seguro.
+  const sql = `
+    CREATE TABLE IF NOT EXISTS notificacoes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tipo TEXT NOT NULL,                          -- 'parcela_vence_hoje', 'parcela_atrasada', etc
+      titulo TEXT NOT NULL,
+      mensagem TEXT NOT NULL,
+      data_referencia TEXT NOT NULL,               -- 'YYYY-MM-DD' (dia que a regra foi avaliada)
+      emprestimo_id INTEGER,
+      parcela_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'pendente',     -- 'pendente', 'lida', 'descartada'
+      criado_em TEXT DEFAULT (datetime('now')),
+      lido_em TEXT,
+      -- Evita criar 500 notificações iguais todo dia:
+      UNIQUE (tipo, parcela_id, data_referencia)
+    );
+  `;
+
+  await runSql(db, sql);
+  log('Tabela notificacoes OK.');
+}
+
+async function ensureClienteCobrancaColumns(db) {
+  const hasReceber = await columnExists(db, 'clientes', 'receber_notificacoes_cobranca');
+  if (!hasReceber) {
+    await runSqlFileIfExists(db, 'add_coluna_receber_notificacoes_cobranca_clientes.sql');
+  }
+
+  const hasMotivo = await columnExists(db, 'clientes', 'motivo_notificacoes_cobranca');
+  if (!hasMotivo) {
+    await runSqlFileIfExists(db, 'add_coluna_motivo_notificacoes_cobranca_clientes.sql');
+  }
+}
+
 // --------- ORQUESTRADOR ---------------------------------------------------
 
 async function runMigrations() {
@@ -97,16 +157,17 @@ async function runMigrations() {
     const current = await getUserVersion(db);
     log(`user_version atual: ${current}`);
 
-    // aqui você vai encadeando futuras migrações:
-    // 0 -> 1, 1 -> 2, 2 -> 3, etc.
+    // 0 -> 1 (primeira vez)
     if (current === 0) {
       await migrateFrom0To1(db);
     } else {
-      log('Nenhuma migração necessária para esta versão.');
+      log('Nenhuma migração 0->1 necessária para esta versão.');
     }
 
-    // Se no futuro tiver uma 1 -> 2:
-    // if (current === 1) await migrateFrom1To2(db);
+    // Sempre garante a tabela de notificações (independente da versão)
+    await ensureNotificacoesTable(db);
+    await ensureClienteCobrancaColumns(db);
+    await runSqlFileIfExists(db, 'add_relatorios_indexes.sql');
 
   } catch (err) {
     log(`ERRO nas migrações: ${err && err.message || err}`);
