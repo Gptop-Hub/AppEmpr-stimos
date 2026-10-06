@@ -233,12 +233,12 @@ function allFromConnection(connection, sql, params = [], timeoutMs = 2500) {
 }
 
 function normalizeSemanticResultSet(rawValue) {
-  const raw = rawValue && typeof rawValue === 'object' ? rawValue : {};
-  const entityIds = [...new Set((Array.isArray(raw.entity_ids) ? raw.entity_ids : [])
+  if (!rawValue || typeof rawValue !== 'object' || !Array.isArray(rawValue.entity_ids)) return null;
+  const raw = rawValue;
+  const entityIds = [...new Set(raw.entity_ids
     .map((value) => Number(value))
     .filter((value) => Number.isInteger(value) && value > 0))]
     .slice(0, MAX_SCOPE_ENTITY_IDS);
-  if (!entityIds.length) return null;
   return {
     result_set_id: String(raw.result_set_id || '').trim().slice(0, 120),
     entity_type: String(raw.entity_type || '').trim().slice(0, 80),
@@ -250,8 +250,9 @@ function injectSemanticResultSet(sql, semanticResultSet) {
   const resultSet = normalizeSemanticResultSet(semanticResultSet);
   if (!resultSet) return { sql, params: [], applied: false };
 
-  const values = resultSet.entity_ids.map(() => '(?)').join(', ');
-  const cte = `semantic_result_set(entity_id) AS (VALUES ${values})`;
+  const cte = resultSet.entity_ids.length
+    ? `semantic_result_set(entity_id) AS (VALUES ${resultSet.entity_ids.map(() => '(?)').join(', ')})`
+    : 'semantic_result_set(entity_id) AS (SELECT CAST(NULL AS INTEGER) WHERE 0)';
   const raw = String(sql || '').trim().replace(/;\s*$/, '');
   const executionSql = /^with\s+/i.test(raw)
     ? raw.replace(/^with\s+/i, `WITH ${cte}, `)

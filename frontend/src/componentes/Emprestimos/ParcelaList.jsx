@@ -3,10 +3,10 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import notify from "../../ui/notify";
 import JurosAdicionaisModal from "./JurosAdicionaisModal.jsx";
+import ReagendarVencimentoModal from "./ReagendarVencimentoModal.jsx";
 import {
   formatarMoeda,
   formatarData,
-  dataParaInput,
   toDateObj,
   renderLinhaJuros,
   getTotalDevidoParcela,
@@ -37,6 +37,7 @@ const ParcelaList = ({
   const [parcelasAtualizadas, setParcelasAtualizadas] = useState({});
   const [abriuJurosParam, setAbriuJurosParam] = useState(false);
   const [mostrarPagamento, setMostrarPagamento] = useState(null);
+  const [reagendamentoModal, setReagendamentoModal] = useState(null);
   const usaParcelaVisualNovo = Boolean(usarVisualNovo);
 
   // Popover para decidir se aplica o novo DIA a todo o empréstimo
@@ -258,7 +259,7 @@ const ParcelaList = ({
         "Cancelar → altera só esta parcela.\n" +
         "OK → altera esta e TODAS as próximas parcelas, empurrando mês a mês.";
 
-      const querCascade = window.confirm(cabecalho + detalhe + escolha);
+      const querCascade = false;
       modo = querCascade ? "cascade" : "single";
     }
 
@@ -754,36 +755,21 @@ const ParcelaList = ({
                     }
               }
             >
-              <label
-                className={
-                  usaParcelaVisualNovo
-                    ? "parcela-card__vencimento-label"
-                    : undefined
-                }
-                style={
-                  usaParcelaVisualNovo
-                    ? undefined
-                    : { display: "flex", alignItems: "center", gap: 8 }
-                }
+              <div
+                className={usaParcelaVisualNovo ? "parcela-card__vencimento-label" : undefined}
+                style={usaParcelaVisualNovo ? undefined : { display: "flex", alignItems: "center", gap: 8 }}
               >
-                Vencimento:
-                <input
-                  type="date"
-                  value={dataParaInput(p.vencimento)}
-                  disabled={somenteLeitura}
-                  onChange={(e) => {
-                    e.stopPropagation();
-                    if (somenteLeitura) return;
-                    onChangeVencimentoInput(p, e.target.value);
-                  }}
-                  className={
-                    usaParcelaVisualNovo
-                      ? "parcela-card__vencimento-input"
-                      : undefined
-                  }
-                  style={usaParcelaVisualNovo ? undefined : { padding: 6 }}
-                />
-              </label>
+                <strong>Vencimento:</strong>
+                {!somenteLeitura && (
+                  <button
+                    type="button"
+                    onClick={() => setReagendamentoModal(p)}
+                    style={{ padding: "5px 9px", borderRadius: 6, border: "1px solid var(--border-soft)", background: "transparent", color: "var(--text-main)", cursor: "pointer" }}
+                  >
+                    Alterar vencimento
+                  </button>
+                )}
+              </div>
               <div
                 className={
                   usaParcelaVisualNovo
@@ -801,7 +787,7 @@ const ParcelaList = ({
             </div>
 
             {/* POPOVER: confirmar aplicar DIA em todo o empréstimo */}
-            {popoverAtivo && (
+            {false && popoverAtivo && (
               <div
                 style={{
                   position: "absolute",
@@ -908,7 +894,7 @@ const ParcelaList = ({
               !fantasma &&
               renderExpLinesWithToggle(explicLines, parcelaId)}
 
-            <div
+            {(pagoCompleto || quitadaMsg) && <div
               className={
                 usaParcelaVisualNovo ? "parcela-card__meta-grid" : undefined
               }
@@ -955,9 +941,9 @@ const ParcelaList = ({
                   (inclui {formatarMoeda(excedente)} de excedente)
                 </div>
               )}
-            </div>
+            </div>}
 
-            <div
+            {(pagoCompleto || quitadaMsg) && <div
               className={
                 usaParcelaVisualNovo ? "parcela-card__meta-item" : undefined
               }
@@ -975,7 +961,7 @@ const ParcelaList = ({
                 : paga
                 ? formatarData(p.data_pagamento)
                 : "-"}
-            </div>
+            </div>}
 
             {!fantasma && !quitadaMsg && renderObservations(p, parcelaId)}
 
@@ -1066,6 +1052,14 @@ const ParcelaList = ({
         );
       })}
       </ul>
+      <ReagendarVencimentoModal
+        parcela={reagendamentoModal}
+        parcelas={lista}
+        onClose={() => setReagendamentoModal(null)}
+        onConcluido={async () => {
+          await onAtualizarVencimento?.();
+        }}
+      />
       <JurosAdicionaisModal
         aberto={jurosModal.aberto}
         parcela={jurosModal.parcela}

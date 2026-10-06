@@ -7,6 +7,10 @@ const { getPagamentosPorEmprestimo } = require('../services/parcelasService');
 const { touchAtividade } = require('../utils/touchAtividade');
 const { registrarSaidaEmprestimo } = require('../services/caixaService');
 const { runAsync, getAsync } = require('../utils/sqliteAsync');
+const { ensureActionContractReady } = require('../services/actionIdentityService');
+const { ensureEntityIdentityV1 } = require('../services/entityIdentityService');
+const { capturarEstadoEmprestimo, registrarAcaoEmprestimo } = require('../services/emprestimoActionService');
+const { ACTION_TYPES } = require('../services/actionTypeContract');
 
 /**
  * Helpers locais de parsing
@@ -104,39 +108,28 @@ exports.buscarPorId = async (req, res) => {
  */
 exports.atualizar = async (req, res) => {
   try {
+    await ensureActionContractReady(db);
+    const emprestimoId = Number(req.params.id);
+    await ensureEntityIdentityV1(db);
+    await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
+    const antes = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
+    if (!antes.emprestimo) {
+      await runAsync(db, 'ROLLBACK');
+      return res.status(404).json({ error: 'Empréstimo não encontrado.' });
+    }
     const resultado = await emprestimoService.atualizarEmprestimo(req.params.id, req.body);
-    try {
-      await touchAtividade({
-        emprestimoId: req.params.id,
-        clienteId: req.body && req.body.cliente_id ? req.body.cliente_id : null
-      });
-    } catch (touchErr) {
-      console.error('[touchAtividade] emprestimo/update:', touchErr);
-    }
-    try {
-      await touchAtividade({
-        emprestimoId: resultado && resultado.id ? resultado.id : null,
-        clienteId: cliente_id
-      });
-    } catch (touchErr) {
-      console.error('[touchAtividade] emprestimo/create:', touchErr);
-    }
-    try {
-      const row = await new Promise((resolve) => {
-        db.get(
-          'SELECT emprestimo_id FROM parcelas WHERE id = ?',
-          [req.params.id],
-          (_err, data) => resolve(data || null)
-        );
-      });
-      await touchAtividade({
-        emprestimoId: row && row.emprestimo_id ? row.emprestimo_id : null
-      });
-    } catch (touchErr) {
-      console.error('[touchAtividade] parcela/vencimento:', touchErr);
-    }
+    await touchAtividade({ emprestimoId, clienteId: req.body && req.body.cliente_id ? req.body.cliente_id : null });
+    const depois = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
+    await registrarAcaoEmprestimo({
+      tipo: 'EMPRESTIMO_EDITADO', origem: 'interface', emprestimoId,
+      clienteId: Number(depois.emprestimo.cliente_id), antes, depois,
+      parametros: { campos_confirmados: Object.keys(req.body || {}).sort() },
+      resumo: `Empréstimo ${emprestimoId} editado`,
+    }, { dbHandle: db });
+    await runAsync(db, 'COMMIT');
     res.json(resultado);
   } catch (error) {
+    await runAsync(db, 'ROLLBACK').catch(() => {});
     console.error('atualizar erro:', error);
     const msg = error && error.message ? String(error.message) : '';
     if (
@@ -229,12 +222,16 @@ exports.criar = async (req, res) => {
     };
 
     console.log('Chamando servico.criarEmprestimo com:', dadosParaCriar);
+    await ensureActionContractReady(db);
+    await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
     const resultado = await emprestimoService.criarEmprestimo(dadosParaCriar);
     console.log('EmprÃƒÂ©stimo criado:', resultado);
+    const emprestimoId = Number(resultado.id);
+    await touchAtividade({ emprestimoId, clienteId: cliente_id });
     await registrarSaidaEmprestimo({
-      data: new Date(),
+      data,
       cliente_id,
-      emprestimo_id: resultado && resultado.id ? Number(resultado.id) : null,
+      emprestimo_id: emprestimoId,
       valor_emprestimo: valor,
       descricao: 'Emprestimo concedido',
       meta: {
@@ -244,11 +241,19 @@ exports.criar = async (req, res) => {
         parcelas: parcelas != null ? Number(parcelas) : null,
         taxa_juros: taxa_juros != null ? Number(taxa_juros) : null,
       },
-    }).catch((caixaErr) => {
-      console.error('[caixa] erro ao registrar saida de emprestimo:', caixaErr);
-    });
+    }, db);
+    const depois = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
+    await registrarAcaoEmprestimo({
+      tipo: 'EMPRESTIMO_CRIADO', origem: 'interface', emprestimoId, clienteId: cliente_id,
+      antes: { emprestimo: null, cliente: depois.cliente, parcelas: [], parcelas_originais: [], pagamentos: [], caixa_movimentos: [], renegociacoes_historico: [] },
+      depois,
+      parametros: { valor, taxa_juros, modalidade, data, dia_pagamento: diaToSave, primeiro_vencimento: primeiraDataPagamento, parcelas },
+      resumo: `Empréstimo ${emprestimoId} criado`,
+    }, { dbHandle: db });
+    await runAsync(db, 'COMMIT');
     res.json(resultado);
   } catch (error) {
+    await runAsync(db, 'ROLLBACK').catch(() => {});
     console.error('criar erro:', error);
     if (error.message === 'Campos obrigatÃƒÂ³rios ausentes.') {
       return res.status(400).json({ error: error.message });
@@ -339,7 +344,10 @@ exports.excluir = async (req, res) => {
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ error: 'ID inv\u00E1lido.' });
 
+    await ensureEntityIdentityV1(db);
+    await ensureActionContractReady(db);
     await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
+    const antes = await capturarEstadoEmprestimo(id, { dbHandle: db });
 
     const removidos = {};
     removidos.notificacoes = await deleteIfTableExists(
@@ -384,6 +392,22 @@ exports.excluir = async (req, res) => {
     );
 
     await runAsync(db, 'DELETE FROM emprestimos WHERE id = ?', [id]);
+    if (antes.emprestimo) {
+      const depois = Object.fromEntries(Object.keys(antes).map((key) => [
+        key,
+        key === 'cliente' ? antes.cliente : (key === 'emprestimo' ? null : []),
+      ]));
+      await registrarAcaoEmprestimo({
+        tipo: ACTION_TYPES.EMPRESTIMO_EXCLUIDO,
+        origem: 'interface',
+        emprestimoId: id,
+        clienteId: antes.emprestimo.cliente_id == null ? null : Number(antes.emprestimo.cliente_id),
+        antes,
+        depois,
+        parametros: { removidos },
+        resumo: `Empréstimo ${id} excluído`,
+      }, { dbHandle: db });
+    }
     await runAsync(db, 'COMMIT');
     return res.json({ mensagem: 'Empr\u00E9stimo exclu\u00EDdo com sucesso.', id, removidos });
   } catch (error) {

@@ -15,7 +15,6 @@ import {
 } from "./helpers.jsx";
 import DetalhesTotalPagoModal from "./DetalhesTotalPagoModal.jsx";
 import AdicionarCapitalModal from "./AdicionarCapitalModal.jsx";
-import RecalcularAtrasoModal from "./RecalcularAtrasoModal.jsx";
 import RenegociacaoInlinePanel from "./RenegociacaoInlinePanel.jsx";
 import ValorEmprestadoToggle from "../common/ValorEmprestadoToggle.jsx";
 import ClientePhotoZoom from "../common/ClientePhotoZoom.jsx";
@@ -25,6 +24,7 @@ import {
   isClienteMalPagador,
   isEmprestimoClienteMalPagador,
 } from "../../utils/clientRisk";
+import { compareClientesByLastActivity } from "./lastActivityOrder.js";
 
 const EMPRESTIMOS_LAYOUT_KEY = "emprestimos.layoutMode";
 const TIPOS_NOTIFICACAO_WHATSAPP = new Set([
@@ -102,8 +102,6 @@ export default function Emprestimos() {
   const [emprestimoSelecionado, setEmprestimoSelecionado] = useState(null);
   const [adicionarCapitalEmprestimo, setAdicionarCapitalEmprestimo] =
     useState(null);
-  const [recalcularAtrasoEmprestimo, setRecalcularAtrasoEmprestimo] =
-    useState(null);
   const [modoExibicao, setModoExibicao] = useState(() => {
     try {
       const salvo = localStorage.getItem(EMPRESTIMOS_LAYOUT_KEY);
@@ -148,23 +146,10 @@ export default function Emprestimos() {
   );
 
   const [openAtivasByLoan, setOpenAtivasByLoan] = useState({});
+  const [expandedLoanDetailsById, setExpandedLoanDetailsById] = useState({});
   const [renegAbertasByLoan, setRenegAbertasByLoan] = useState({});
   const [mostrarDiagnosticoWhatsApp, setMostrarDiagnosticoWhatsApp] =
     useState(false);
-
-  const parseLastActivityMs = (value) => {
-    if (!value) return 0;
-    if (value instanceof Date) return value.getTime();
-    const raw = String(value).trim();
-    if (!raw) return 0;
-    const normalized = raw.includes(" ") && !raw.includes("T")
-      ? raw.replace(" ", "T")
-      : raw;
-    const ts = Date.parse(normalized);
-    if (!Number.isNaN(ts)) return ts;
-    const dt = toDateObj(raw);
-    return dt ? dt.getTime() : 0;
-  };
 
   useEffect(() => {
     axios
@@ -279,6 +264,7 @@ export default function Emprestimos() {
       ...prev,
       [emprestimoAlvo.cliente_id]: true,
     }));
+    setExpandedLoanDetailsById((prev) => ({ ...prev, [empId]: true }));
     setOpenAtivasByLoan((prev) => ({ ...prev, [empId]: true }));
 
     // Scroll para o card do emprestimo, se possivel
@@ -364,54 +350,6 @@ export default function Emprestimos() {
     return nomeMatch;
   });
 
-  const getLastActivityTimestamp = (cliente) => {
-    let maxTs = 0;
-    const tryFields = (obj, fields) => {
-      fields.forEach((f) => {
-        if (obj && obj[f]) {
-          const dt = toDateObj(obj[f]);
-          if (dt) maxTs = Math.max(maxTs, dt.getTime());
-        }
-      });
-    };
-    tryFields(cliente, [
-      "updatedAt",
-      "updated_at",
-      "criadoEm",
-      "criado_em",
-      "createdAt",
-      "created_at",
-    ]);
-    (cliente.emprestimos || []).forEach((emp) =>
-      tryFields(emp, [
-        "updatedAt",
-        "updated_at",
-        "criadoEm",
-        "criado_em",
-        "data",
-        "data_pagamento",
-        "createdAt",
-        "created_at",
-        "ultimo_pagamento",
-        "ultimo_movimento",
-      ])
-    );
-    (cliente.emprestimos || []).forEach((emp) => {
-      const parcelas = emp.parcelasDetalhes || [];
-      parcelas.forEach((p) =>
-        tryFields(p, ["data_pagamento", "vencimento", "updatedAt", "updated_at"])
-      );
-      const pagamentos = emp.pagamentos || [];
-      pagamentos.forEach((pg) =>
-        tryFields(pg, ["data", "createdAt", "created_at", "updatedAt", "updated_at"])
-      );
-    });
-    if (cliente.lastActivityTimestamp && Number(cliente.lastActivityTimestamp)) {
-      maxTs = Math.max(maxTs, Number(cliente.lastActivityTimestamp));
-    }
-    return maxTs;
-  };
-
   const getClienteCreatedTimestamp = (cliente) => {
     const fields = ["criadoEm", "criado_em", "createdAt", "created_at"];
     for (const f of fields) {
@@ -436,18 +374,6 @@ export default function Emprestimos() {
     }, 0);
   };
 
-  const getClienteLastActivityFromLoans = (cliente) => {
-    const loans = cliente.emprestimos || [];
-    let maxTs = parseLastActivityMs(cliente.last_activity_at);
-    let hasAny = !!cliente.last_activity_at;
-    loans.forEach((emp) => {
-      if (emp && emp.last_activity_at) hasAny = true;
-      const ts = parseLastActivityMs(emp.last_activity_at);
-      if (ts) maxTs = Math.max(maxTs, ts);
-    });
-    return { maxTs, hasAny };
-  };
-
   const ordenarClientes = (a, b) => {
     switch (ordenacao) {
       case "idCrescente":
@@ -467,12 +393,7 @@ export default function Emprestimos() {
       case "menorValor":
         return getClienteTotalEmprestado(a) - getClienteTotalEmprestado(b);
       case "ultimoTrabalhado":
-        {
-          const aInfo = getClienteLastActivityFromLoans(a);
-          const bInfo = getClienteLastActivityFromLoans(b);
-          if (aInfo.hasAny || bInfo.hasAny) return bInfo.maxTs - aInfo.maxTs;
-          return getLastActivityTimestamp(b) - getLastActivityTimestamp(a);
-        }
+        return compareClientesByLastActivity(a, b);
       case "malPagadores":
       case "notificacoesDesligadas":
         return (a.nome || "").localeCompare(b.nome || "", "pt-BR", {
@@ -682,53 +603,6 @@ export default function Emprestimos() {
         "Erro desconhecido";
       notify.error("Erro ao excluir todos os emprestimos: " + msg);
     }
-  };
-
-  const inicioDoDia = (value = new Date()) => {
-    const dt = toDateObj(value);
-    if (!dt) return null;
-    return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
-  };
-
-  const parcelaEstaQuitada = (parcela) => {
-    if (!parcela) return false;
-    if (Number(parcela.pago || 0) === 1) return true;
-    const valorTotal = Number(parcela.valor_total || 0);
-    const valorPago = Number(parcela.valor_pago || 0);
-    return valorTotal > 0 && valorPago >= valorTotal - 0.009;
-  };
-
-  const parcelaTemRecalculoAplicado = (parcela) => {
-    const explicacao = String(parcela?.explicacao || "");
-    return /recalculo de atraso aplicado/i.test(explicacao);
-  };
-
-  const getParcelaAtualAberta = (emp) => {
-    const abertas = (emp?.parcelasDetalhes || [])
-      .filter((parcela) => {
-        if (!parcela) return false;
-        if (Number(parcela.numero) === -1) return false;
-        if (parcela?.renegociada) return false;
-        return !parcelaEstaQuitada(parcela);
-      })
-      .sort((a, b) => {
-        const na = Number(a?.numero ?? 0);
-        const nb = Number(b?.numero ?? 0);
-        if (na !== nb) return na - nb;
-        return Number(a?.id || 0) - Number(b?.id || 0);
-      });
-    return abertas[0] || null;
-  };
-
-  const temParcelaVencidaEmAberto = (emp) => {
-    const hoje = inicioDoDia(new Date());
-    if (!hoje) return false;
-    const parcelaAtual = getParcelaAtualAberta(emp);
-    if (!parcelaAtual) return false;
-    if (parcelaTemRecalculoAplicado(parcelaAtual)) return false;
-    const vencimento = inicioDoDia(parcelaAtual.vencimento);
-    if (!vencimento) return false;
-    return vencimento.getTime() < hoje.getTime();
   };
 
   const handleLoanEntryDoubleClick = (event, clienteId) => {
@@ -1212,8 +1086,6 @@ export default function Emprestimos() {
                         if (Number(p.valor_pago || 0) > 0) return true;
                         return false;
                       });
-                      const podeRecalcularAtraso = temParcelaVencidaEmAberto(emp);
-
                       const valorEmprestado =
                         emp.valor_emprestado ??
                         emp.valor_original ??
@@ -1331,143 +1203,127 @@ export default function Emprestimos() {
                               </button>
                             </div>
                           ) : null}
-                          <div
-                            className="loan-summary-grid"
-                          >
-                            <div className="loan-summary-column loan-summary-column--left">
-                              <div className="loan-summary-item loan-summary-item--cliente">
-                                <strong className="loan-summary-label">Cliente:</strong>{" "}
-                                <span className="loan-summary-value">
-                                  <ClienteIdentity
-                                    cliente={cliente}
-                                    avatarSize={28}
-                                  />
-                                </span>
-                                {emprestimoMalPagador ? (
-                                  <span className="badge-risk badge-risk--inline">
-                                    Cliente mal pagador
-                                  </span>
-                                ) : null}
-                              </div>
-                              <div className="loan-summary-item loan-summary-item--id">
-                                <strong className="loan-summary-label">ID:</strong>{" "}
-                                <span className="loan-summary-value">{displayId}</span>
-                              </div>
-                              <div
-                                className="loan-summary-item loan-summary-item--valor"
-                              >
-                                <strong
-                                  className="loan-summary-label"
-                                  style={{ whiteSpace: "nowrap" }}
-                                >
-                                  Valor emprestado:
-                                </strong>
-                                <div
-                                  className="loan-summary-value"
-                                  style={{ flex: "1 1 180px", minWidth: 0 }}
-                                >
-                                  <ValorEmprestadoToggle
-                                    parts={valorEmprestadoParts}
-                                    formatar={formatarMoeda}
-                                    storageKey={`ui.valorEmprestado.${emp.id}`}
-                                  />
-                                </div>
-                              </div>
-                              <div className="loan-summary-item loan-summary-item--modalidade">
-                                <strong className="loan-summary-label">Modalidade:</strong>{" "}
-                                <span className="loan-summary-value">
-                                  {emp.modalidade === "aberto"
-                                    ? "Em aberto"
-                                    : "Parcelado"}
-                                </span>
-                              </div>
-                              <div className="loan-summary-item loan-summary-item--inicio">
-                                <strong className="loan-summary-label">
-                                  {"Data de in\u00EDcio do empr\u00E9stimo:"}
-                                </strong>{" "}
-                                <span className="loan-summary-value">
-                                  {formatarData(emp.data)}
-                                </span>
-                              </div>
+                          <div className="loan-entry__compact">
+                            <div className="loan-entry__identity">
+                              <ClienteIdentity cliente={cliente} avatarSize={28} />
                             </div>
-                            <div className="loan-summary-column loan-summary-column--right">
-                              <div className="loan-summary-item loan-summary-item--capital capital-restante-row">
-                                <span className="capital-restante-info">
-                                  <strong className="loan-summary-label">
-                                    Capital restante:
-                                  </strong>{" "}
-                                  <span className="loan-summary-value">
-                                    {formatarMoeda(capitalRestante || 0)}
-                                  </span>
-                                </span>
-                                <button
-                                  type="button"
-                                  className="capital-restante-action-btn"
-                                  title="Adicionar capital / Refinanciar"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setAdicionarCapitalEmprestimo(emp);
-                                  }}
-                                >
-                                  Adicionar capital
-                                </button>
-                              </div>
-                              <div
-                                className="loan-summary-item loan-summary-item--total-pago"
-                              >
-                                <strong className="loan-summary-label">Total pago:</strong>{" "}
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setEmprestimoSelecionado({
-                                      id: emp.id,
-                                      totalPago: emp.total_pago || 0,
-                                      clienteNome: nomeCliente(emp.cliente_id),
-                                    })
-                                  }
-                                  className="loan-total-paid-btn"
-                                >
-                                  <span>{formatarMoeda(emp.total_pago || 0)}</span>
-                                  <span
-                                    className="loan-total-paid-btn__hint"
-                                  >
-                                    Ver detalhes
-                                  </span>
-                                </button>
-                              </div>
-                              <div className="loan-summary-item loan-summary-item--tempo">
-                                <strong className="loan-summary-label">Tempo passado:</strong>{" "}
-                                <span className="loan-summary-value">
-                                  {calcularTempoPassado(emp.data)}
-                                </span>
-                              </div>
-                              <div className="loan-summary-item loan-summary-item--proximo">
-                                <strong className="loan-summary-label">
-                                  {"Pr\u00F3ximo vencimento:"}
-                                </strong>{" "}
-                                <span className="loan-summary-value">
-                                  {getProximoVencimento(emp)}
-                                </span>
-                              </div>
+                            <div className="loan-entry__amount">
+                              <span className="loan-entry__amount-label">Valor emprestado</span>
+                              <ValorEmprestadoToggle
+                                parts={valorEmprestadoParts}
+                                formatar={formatarMoeda}
+                                storageKey={`ui.valorEmprestado.${emp.id}`}
+                              />
                             </div>
-                            {emp.observacao ? (
-                              <div className="loan-summary-item loan-summary-item--observacao">
-                                <strong className="loan-summary-label">
-                                  {"Observa\u00E7\u00E3o:"}
-                                </strong>{" "}
-                                <span className="loan-summary-value">
-                                  {emp.observacao}
-                                </span>
-                              </div>
-                            ) : null}
+                            <button
+                              type="button"
+                              className="loan-entry__details-toggle"
+                              aria-expanded={!!expandedLoanDetailsById[emp.id]}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedLoanDetailsById((prev) => ({
+                                  ...prev,
+                                  [emp.id]: !prev[emp.id],
+                                }));
+                              }}
+                            >
+                              {expandedLoanDetailsById[emp.id]
+                                ? "− Menos informações"
+                                : "+ Informações"}
+                            </button>
                           </div>
 
-                          <div
-                            className="loan-action-row"
-                          >
-                            <div
-                              className="loan-action-row__main"
-                            >
+                          {expandedLoanDetailsById[emp.id] ? (
+                            <div className="loan-entry__details">
+                              <div className="loan-summary-grid">
+                                <div className="loan-summary-column loan-summary-column--left">
+                                  <div className="loan-summary-item loan-summary-item--id">
+                                    <strong className="loan-summary-label">ID:</strong>{" "}
+                                    <span className="loan-summary-value">{displayId}</span>
+                                  </div>
+                                  <div className="loan-summary-item loan-summary-item--inicio">
+                                    <strong className="loan-summary-label">
+                                      {"Data de in\u00EDcio:"}
+                                    </strong>{" "}
+                                    <span className="loan-summary-value">
+                                      {formatarData(emp.data)}
+                                    </span>
+                                  </div>
+                                  <div className="loan-summary-item loan-summary-item--tempo">
+                                    <strong className="loan-summary-label">Tempo passado:</strong>{" "}
+                                    <span className="loan-summary-value">
+                                      {calcularTempoPassado(emp.data)}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="loan-summary-column loan-summary-column--right">
+                                  <div className="loan-summary-item loan-summary-item--capital">
+                                    <strong className="loan-summary-label">Capital restante:</strong>{" "}
+                                    <span className="loan-summary-value">
+                                      {formatarMoeda(capitalRestante || 0)}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="capital-restante-action-btn"
+                                      title="Adicionar capital / Refinanciar"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setAdicionarCapitalEmprestimo(emp);
+                                      }}
+                                    >
+                                      Adicionar capital
+                                    </button>
+                                  </div>
+                                  <div className="loan-summary-item loan-summary-item--total-pago">
+                                    <strong className="loan-summary-label">Total pago:</strong>{" "}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setEmprestimoSelecionado({
+                                          id: emp.id,
+                                          totalPago: emp.total_pago || 0,
+                                          clienteNome: nomeCliente(emp.cliente_id),
+                                        })
+                                      }
+                                      className="loan-total-paid-btn"
+                                    >
+                                      <span>{formatarMoeda(emp.total_pago || 0)}</span>
+                                      <span className="loan-total-paid-btn__hint">Ver detalhes</span>
+                                    </button>
+                                  </div>
+                                  <div className="loan-summary-item loan-summary-item--proximo">
+                                    <strong className="loan-summary-label">
+                                      {"Pr\u00F3ximo vencimento:"}
+                                    </strong>{" "}
+                                    <span className="loan-summary-value">
+                                      {getProximoVencimento(emp)}
+                                    </span>
+                                  </div>
+                                </div>
+                                {emp.observacao ? (
+                                  <div className="loan-summary-item loan-summary-item--observacao">
+                                    <strong className="loan-summary-label">
+                                      {"Observa\u00E7\u00E3o:"}
+                                    </strong>{" "}
+                                    <span className="loan-summary-value">
+                                      {emp.observacao}
+                                    </span>
+                                  </div>
+                                ) : null}
+                                {emprestimoMalPagador ? (
+                                  <div className="loan-summary-item loan-summary-item--risco">
+                                    <span className="badge-risk badge-risk--inline">
+                                      Cliente mal pagador
+                                    </span>
+                                  </div>
+                                ) : null}
+                              </div>
+
+                            </div>
+                          ) : null}
+
+                          <div className="loan-action-row">
+                            <div className="loan-action-row__main">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1513,19 +1369,6 @@ export default function Emprestimos() {
                               </button>
                             )}
 
-                            {podeRecalcularAtraso && (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setRecalcularAtrasoEmprestimo(emp);
-                                }}
-                                title="Detectar períodos vencidos em aberto e lançar em juros pendentes"
-                                className="loan-action-btn loan-action-btn--info"
-                              >
-                                Recalcular atraso
-                              </button>
-                            )}
                             </div>
 
                             <div
@@ -1551,7 +1394,7 @@ export default function Emprestimos() {
                               <ParcelaList
                                 parcelas={emp.parcelasDetalhes}
                                 showAntigas={false}
-                                onAtualizarVencimento={atualizarVencimento}
+                                onAtualizarVencimento={carregarEmprestimos}
                                 usarVisualNovo={true}
                                 parcelaDestaqueId={
                                   veioDeNotificacoes ? parcelaOrigemId : null
@@ -1603,14 +1446,6 @@ export default function Emprestimos() {
         }}
       />
 
-      <RecalcularAtrasoModal
-        aberto={!!recalcularAtrasoEmprestimo}
-        emprestimo={recalcularAtrasoEmprestimo}
-        onClose={() => setRecalcularAtrasoEmprestimo(null)}
-        onAplicar={async () => {
-          await carregarEmprestimos();
-        }}
-      />
     </>
   );
 }

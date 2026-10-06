@@ -26,7 +26,7 @@ export default function NovoCliente() {
     nome: '', cpf: '', ddd: '', telefone: '',
     cidade: '', cidadeLivre: '', bairro: '', rua: '', numero: '',
     emPredio: false, nomePredio: '', andar: '', flat: '',
-    empresa: '', categoriaTrabalho: '', ruaEmpresa: '', bairroEmpresa: '', funcao: '', telEmpresa: '',
+    empresa: '', categoriaTrabalho: '', bairroEmpresa: '', ruaEmpresa: '', numeroEmpresa: '', funcao: '', telEmpresa: '',
     referencia: '', observacao: '', criadoEm: hoje
   };
 
@@ -181,7 +181,7 @@ export default function NovoCliente() {
       endereco += `, Prédio: ${form.nomePredio}, Andar: ${form.andar}, Flat: ${form.flat}`;
     }
 
-    const trabalho = `Empresa: ${form.empresa}, Categoria: ${form.categoriaTrabalho}, Rua: ${form.ruaEmpresa}, Bairro: ${form.bairroEmpresa}, Função: ${form.funcao}, Telefone: ${form.telEmpresa}`;
+    const trabalho = `Empresa: ${form.empresa}, Categoria: ${form.categoriaTrabalho}, Bairro: ${form.bairroEmpresa}, Rua: ${form.ruaEmpresa}, Nº: ${form.numeroEmpresa}, Função: ${form.funcao}, Telefone: ${form.telEmpresa}`;
     const telefone = `(${form.ddd}) ${form.telefone}`;
 
     const payload = {
@@ -732,6 +732,13 @@ export default function NovoCliente() {
             style={{ ...fieldStyle, marginTop: 8 }}
           />
           <input
+            name="bairroEmpresa"
+            value={form.bairroEmpresa}
+            onChange={handleChange}
+            placeholder="Bairro da empresa"
+            style={{ ...fieldStyle, marginTop: 8 }}
+          />
+          <input
             name="ruaEmpresa"
             value={form.ruaEmpresa}
             onChange={handleChange}
@@ -739,10 +746,10 @@ export default function NovoCliente() {
             style={{ ...fieldStyle, marginTop: 8 }}
           />
           <input
-            name="bairroEmpresa"
-            value={form.bairroEmpresa}
+            name="numeroEmpresa"
+            value={form.numeroEmpresa}
             onChange={handleChange}
-            placeholder="Bairro da empresa"
+            placeholder="Número da empresa"
             style={{ ...fieldStyle, marginTop: 8 }}
           />
           <input

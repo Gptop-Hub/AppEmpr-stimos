@@ -53,6 +53,9 @@ async function purgeDatabase(db) {
        FROM sqlite_schema
       WHERE type = 'table'
         AND name NOT LIKE 'sqlite_%'
+        -- A identidade desta instalacao nao e historico financeiro. Mantem-se
+        -- para que um reset de dados nao reutilize sequencias deste dispositivo.
+        AND name <> 'action_origin_state'
       ORDER BY name`
   );
   const tableNames = rows.map((row) => row && row.name).filter(Boolean);

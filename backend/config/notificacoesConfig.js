@@ -42,6 +42,7 @@ async function salvarConfig(config) {
 module.exports = {
   DEFAULT_VENCE_EM_BREVE,
   DEFAULT_CONFIG,
+  getConfigPath,
   lerConfig,
   salvarConfig,
 };

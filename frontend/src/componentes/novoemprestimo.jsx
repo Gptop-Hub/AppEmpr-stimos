@@ -43,7 +43,7 @@ const getMatchScore = (query, nomeCliente) => {
 export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSalvo, onCancelar }) {
   const navigate = useNavigate();
   const [clientes, setClientes] = useState([]);
-  const [modalidade, setModalidade] = useState('parcelado');
+  const modalidade = 'parcelado';
   const [clienteId, setClienteId] = useState(clienteIdInicial);
   const [valor, setValor] = useState('');
   const [data, setData] = useState(hojeLocalISO()); // data de inicio do emprestimo
@@ -168,7 +168,6 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
         data_pagamento: modalidade === 'parcelado' && dataPagamento ? dataPagamento : null,
       });
       notify.success(`Emprestimo registrado! ID: ${res.data.id}`);
-      setModalidade('parcelado');
       setClienteId('');
       setBuscaCliente('');
       setValor('');
@@ -308,24 +307,10 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
           {'\u{1F4C4} Novo Empr\u00e9stimo'}
         </h2>
 
-      {/* Modalidade + Cliente */}
+      {/* Cliente */}
       <div style={sectionStyle}>
         <div style={sectionTitleStyle}>
-          <span>{'\u{1F464} Cliente & Modalidade'}</span>
-        </div>
-
-        <div style={fieldWrapperStyle}>
-          <span style={labelStyle}>Modalidade</span>
-          <div>
-            <label style={radioLabelStyle}>
-              <input
-                type="radio"
-                checked={modalidade === 'parcelado'}
-                onChange={() => setModalidade('parcelado')}
-              />
-              Parcelado
-            </label>
-          </div>
+          <span>{'\u{1F464} Cliente'}</span>
         </div>
 
         <div style={fieldWrapperStyle}>
@@ -554,31 +539,6 @@ export default function NovoEmprestimo({ clienteId: clienteIdInicial = '', onSal
                 </li>
               )}
             </ul>
-          </div>
-        </div>
-      )}
-
-      {modalidade === 'aberto' && (
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>
-            <span>{'\u{1F4D1} Juros para empr\u00e9stimo em aberto'}</span>
-          </div>
-
-          <div style={fieldWrapperStyle}>
-            <label style={labelStyle}>Taxa de Juros (%)</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={taxaJuros}
-              onChange={(e) => {
-                const raw = e.target.value.replace(/[^0-9.,]/g, '');
-                setTaxaJuros(raw);
-              }}
-              style={fieldStyle}
-            />
-            <p style={smallHelpText}>
-            {'Ap\u00f3s salvar, utilize a aba de pagamentos para registrar valores livres.'}
-            </p>
           </div>
         </div>
       )}

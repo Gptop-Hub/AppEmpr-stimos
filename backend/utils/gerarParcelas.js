@@ -3,6 +3,37 @@ const { parseToDate } = require('../services/dateUtils');
 // Retorna array com { numero, valor_total, valor_capital, valor_juros, vencimento_iso, vencimento_ext }
 
 function pad(n) { return String(n).padStart(2, '0'); }
+function f2(value) { return Number(Number(value || 0).toFixed(2)); }
+
+function formatarMoeda(value) {
+  return f2(Math.abs(value)).toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).replace(/\u00a0/g, ' ');
+}
+
+// Mantém a amortização e o saldo usados no cálculo de juros. Apenas fecha, na
+// última parcela, a diferença criada pelo arredondamento das parcelas anteriores.
+function reconciliarCapital(parcelas, capitalOriginal) {
+  if (!parcelas.length) return parcelas;
+
+  const ultima = parcelas[parcelas.length - 1];
+  const capitalArredondado = f2(capitalOriginal);
+  const somaAnteriores = f2(
+    parcelas.slice(0, -1).reduce((soma, parcela) => soma + Number(parcela.valor_capital || 0), 0)
+  );
+  const capitalNormalUltima = f2(ultima.valor_capital);
+  const capitalCorrigido = f2(capitalArredondado - somaAnteriores);
+  const ajuste = f2(capitalCorrigido - capitalNormalUltima);
+
+  ultima.valor_capital = capitalCorrigido;
+  ultima.valor_total = f2(capitalCorrigido + Number(ultima.valor_juros || 0));
+  if (ajuste !== 0) {
+    ultima.explicacao =
+      `Ajuste de ${formatarMoeda(ajuste)} aplicado nesta parcela para fechar corretamente o capital total do empréstimo.`;
+  }
+  return parcelas;
+}
 
 function formatISO(d) {
   if (!d) return null;
@@ -90,7 +121,7 @@ function gerarParcelas({ capital, taxa_juros, qtdParcelas, dataInicio, diaPagame
 
       saldo -= amortizacao;
     }
-    return parcelas;
+    return reconciliarCapital(parcelas, capital);
   }
 
   // Caminho antigo: dataInicio + diaPagamento
@@ -122,7 +153,7 @@ function gerarParcelas({ capital, taxa_juros, qtdParcelas, dataInicio, diaPagame
     saldo -= amortizacao;
   }
 
-  return parcelas;
+  return reconciliarCapital(parcelas, capital);
 }
 
 module.exports = gerarParcelas;

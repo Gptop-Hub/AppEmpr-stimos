@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const paymentCommand = require('./paymentCommand');
 const { createActionRegistry, actionRegistry: defaultActionRegistry } = require('./actionRegistry');
 const { getPersistentAuditStore } = require('./actionAuditStore');
+const { touchAtividade } = require('../../../utils/touchAtividade');
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
@@ -123,6 +124,17 @@ function createActionGateway({
         console.error('[assistente/action-audit] falha ao registrar execucao rejeitada:', auditError);
       }
       throw err;
+    }
+
+    // Todas as ações confirmadas do assistente alteram um empréstimo. Registra
+    // a atividade apenas depois de a operação financeira ter sido concluída.
+    try {
+      await touchAtividade({
+        emprestimoId: token.arguments.emprestimo_id,
+        clienteId: token.arguments.cliente_id,
+      });
+    } catch (touchErr) {
+      console.error('[touchAtividade] assistente/action:', touchErr);
     }
 
     // A auditoria fica fora da transacao financeira. Depois de um COMMIT, uma

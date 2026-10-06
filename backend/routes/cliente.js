@@ -11,6 +11,17 @@ const { touchAtividade } = require('../utils/touchAtividade');
 const { getClientPhotosDir } = require('../utils/paths');
 const { gerarNotificacoesParaData } = require('../services/notificacoesService');
 const { clienteIdValido, salvarEdicaoCliente } = require('../services/clienteEdicaoService');
+const { runAsync } = require('../utils/sqliteAsync');
+const { ensureActionContractReady } = require('../services/actionIdentityService');
+const { ensureEntityIdentityV1 } = require('../services/entityIdentityService');
+const { capturarEstadoCliente, registrarAcaoCliente } = require('../services/clienteActionService');
+const { ACTION_TYPES } = require('../services/actionTypeContract');
+const {
+  adicionarTelefoneCliente,
+  atualizarMalPagadorCliente,
+  atualizarPreferenciaCobrancaCliente,
+  atualizarFotoCliente,
+} = require('../services/clienteActionMutationService');
 
 const MAX_FOTO_BYTES = 5 * 1024 * 1024;
 const MIME_FOTOS_PERMITIDOS = new Set([
@@ -414,7 +425,7 @@ router.get('/:id/foto', (req, res) => {
 /**
  * Adicionar ou trocar a foto de um cliente.
  */
-router.post('/:id/foto', receberFoto, (req, res) => {
+router.post('/:id/foto', receberFoto, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     return res.status(400).json({ error: 'ID de cliente invalido.' });
@@ -428,100 +439,85 @@ router.post('/:id/foto', receberFoto, (req, res) => {
     return res.status(415).json({ error: 'O arquivo nao e uma imagem JPG, PNG ou WebP valida.' });
   }
 
-  db.get('SELECT id, foto_cliente FROM clientes WHERE id = ?', [id], async (err, cliente) => {
-    if (err) {
-      console.error('Erro ao validar cliente para foto:', err.message);
-      return res.status(500).json({ error: 'Erro ao salvar foto do cliente.' });
-    }
-    if (!cliente) {
-      return res.status(404).json({ error: 'Cliente nao encontrado.' });
-    }
+  try {
+    const cliente = await new Promise((resolve, reject) => {
+      db.get('SELECT id FROM clientes WHERE id = ?', [id], (err, row) => err ? reject(err) : resolve(row));
+    });
+    if (!cliente) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+  } catch (err) {
+    console.error('Erro ao validar cliente para foto:', err.message);
+    return res.status(500).json({ error: 'Erro ao salvar foto do cliente.' });
+  }
 
-    const nomeArquivo = `cliente-${id}-${crypto.randomUUID()}.${formato.extension}`;
-    const destino = resolverCaminhoFoto(nomeArquivo);
-    if (!destino) {
-      return res.status(500).json({ error: 'Erro ao preparar foto do cliente.' });
-    }
+  const nomeArquivo = `cliente-${id}-${crypto.randomUUID()}.${formato.extension}`;
+  const destino = resolverCaminhoFoto(nomeArquivo);
+  if (!destino) return res.status(500).json({ error: 'Erro ao preparar foto do cliente.' });
 
-    try {
-      await fs.promises.writeFile(destino, req.file.buffer, { flag: 'wx' });
-    } catch (writeErr) {
-      console.error('Erro ao gravar foto do cliente:', writeErr.message);
-      await removerArquivoFoto(nomeArquivo);
-      return res.status(500).json({ error: 'Erro ao salvar foto do cliente.' });
-    }
+  try {
+    await fs.promises.writeFile(destino, req.file.buffer, { flag: 'wx' });
+  } catch (writeErr) {
+    console.error('Erro ao gravar foto do cliente:', writeErr.message);
+    await removerArquivoFoto(nomeArquivo);
+    return res.status(500).json({ error: 'Erro ao salvar foto do cliente.' });
+  }
 
-    return db.run(
-      'UPDATE clientes SET foto_cliente = ? WHERE id = ?',
-      [nomeArquivo, id],
-      async function (updateErr) {
-        if (updateErr) {
-          console.error('Erro ao atualizar referencia da foto:', updateErr.message);
-          await removerArquivoFoto(nomeArquivo);
-          return res.status(500).json({ error: 'Erro ao salvar foto do cliente.' });
-        }
-        if (this.changes === 0) {
-          await removerArquivoFoto(nomeArquivo);
-          return res.status(404).json({ error: 'Cliente nao encontrado.' });
-        }
+  let resultado;
+  try {
+    resultado = await atualizarFotoCliente({ dbPath: db.getDbPath(), clienteId: id, fotoCliente: nomeArquivo });
+  } catch (err) {
+    await removerArquivoFoto(nomeArquivo);
+    console.error('Erro ao atualizar referencia da foto:', err.message);
+    if (err.status === 404) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+    return res.status(500).json({ error: 'Erro ao salvar foto do cliente.' });
+  }
 
-        if (cliente.foto_cliente && cliente.foto_cliente !== nomeArquivo) {
-          await removerArquivoFoto(cliente.foto_cliente);
-        }
-
-        try {
-          await touchAtividade({ clienteId: id });
-        } catch (touchErr) {
-          console.error('[touchAtividade] cliente/foto:', touchErr);
-        }
-
-        return enviarClientePorId(id, res);
-      }
-    );
-  });
+  if (resultado.clienteAntes.foto_cliente && resultado.clienteAntes.foto_cliente !== nomeArquivo) {
+    await removerArquivoFoto(resultado.clienteAntes.foto_cliente);
+  }
+  try {
+    await touchAtividade({ clienteId: id });
+  } catch (touchErr) {
+    console.error('[touchAtividade] cliente/foto:', touchErr);
+  }
+  return enviarClientePorId(id, res);
 });
 
 /**
  * Remover a foto atual de um cliente.
  */
-router.delete('/:id/foto', (req, res) => {
+router.delete('/:id/foto', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     return res.status(400).json({ error: 'ID de cliente invalido.' });
   }
 
-  db.get('SELECT id, foto_cliente FROM clientes WHERE id = ?', [id], (err, cliente) => {
-    if (err) {
-      console.error('Erro ao buscar cliente para remover foto:', err.message);
-      return res.status(500).json({ error: 'Erro ao remover foto do cliente.' });
-    }
-    if (!cliente) {
-      return res.status(404).json({ error: 'Cliente nao encontrado.' });
-    }
-    if (!cliente.foto_cliente) {
-      return enviarClientePorId(id, res);
-    }
+  let cliente;
+  try {
+    cliente = await new Promise((resolve, reject) => {
+      db.get('SELECT id, foto_cliente FROM clientes WHERE id = ?', [id], (err, row) => err ? reject(err) : resolve(row));
+    });
+  } catch (err) {
+    console.error('Erro ao buscar cliente para remover foto:', err.message);
+    return res.status(500).json({ error: 'Erro ao remover foto do cliente.' });
+  }
+  if (!cliente) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+  if (!cliente.foto_cliente) return enviarClientePorId(id, res);
 
-    return db.run(
-      'UPDATE clientes SET foto_cliente = NULL WHERE id = ?',
-      [id],
-      async function (updateErr) {
-        if (updateErr) {
-          console.error('Erro ao limpar referencia da foto:', updateErr.message);
-          return res.status(500).json({ error: 'Erro ao remover foto do cliente.' });
-        }
-
-        await removerArquivoFoto(cliente.foto_cliente);
-        try {
-          await touchAtividade({ clienteId: id });
-        } catch (touchErr) {
-          console.error('[touchAtividade] cliente/remover-foto:', touchErr);
-        }
-
-        return enviarClientePorId(id, res);
-      }
-    );
-  });
+  let resultado;
+  try {
+    resultado = await atualizarFotoCliente({ dbPath: db.getDbPath(), clienteId: id, fotoCliente: null });
+  } catch (err) {
+    console.error('Erro ao limpar referencia da foto:', err.message);
+    if (err.status === 404) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+    return res.status(500).json({ error: 'Erro ao remover foto do cliente.' });
+  }
+  await removerArquivoFoto(resultado.clienteAntes.foto_cliente);
+  try {
+    await touchAtividade({ clienteId: id });
+  } catch (touchErr) {
+    console.error('[touchAtividade] cliente/remover-foto:', touchErr);
+  }
+  return enviarClientePorId(id, res);
 });
 
 /**
@@ -566,7 +562,7 @@ router.get('/:id/telefones', (req, res) => {
 /**
  * Adicionar telefone extra para um cliente
  */
-router.post('/:id/telefones', (req, res) => {
+router.post('/:id/telefones', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     return res.status(400).json({ error: 'ID de cliente invalido.' });
@@ -577,76 +573,33 @@ router.post('/:id/telefones', (req, res) => {
     return res.status(400).json({ error: 'Telefone invalido. Informe com DDD e numero.' });
   }
 
-  db.get('SELECT id, telefone FROM clientes WHERE id = ?', [id], (errCliente, cliente) => {
-    if (errCliente) {
-      console.error('Erro ao validar cliente para telefone extra:', errCliente.message);
-      return res.status(500).json({ error: 'Erro ao adicionar telefone.' });
-    }
-    if (!cliente) {
-      return res.status(404).json({ error: 'Cliente nao encontrado.' });
-    }
-
-    const novoNorm = normalizeTelefoneForCompare(telefoneFormatado);
-    const principalNorm = normalizeTelefoneForCompare(cliente.telefone);
-    if (principalNorm && principalNorm === novoNorm) {
+  let telefoneAdicionado;
+  try {
+    telefoneAdicionado = await adicionarTelefoneCliente({
+      dbPath: db.getDbPath(), clienteId: id, telefone: telefoneFormatado,
+      normalizarTelefone: normalizeTelefoneForCompare,
+    });
+  } catch (err) {
+    console.error('Erro ao adicionar telefone extra:', err.message);
+    if (err.status === 404) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+    if (err.status === 409 || err.code === 'SQLITE_CONSTRAINT' || String(err.message || '').toLowerCase().includes('unique')) {
       return res.status(409).json({ error: 'Telefone ja cadastrado para este cliente.' });
     }
-
-    db.all(
-      'SELECT id, telefone FROM clientes_telefones WHERE cliente_id = ?',
-      [id],
-      (errExtras, extrasRows) => {
-        if (errExtras) {
-          console.error('Erro ao validar duplicidade de telefone extra:', errExtras.message);
-          return res.status(500).json({ error: 'Erro ao adicionar telefone.' });
-        }
-
-        const duplicado = (extrasRows || []).some(
-          (item) =>
-            normalizeTelefoneForCompare(item && item.telefone) === novoNorm
-        );
-        if (duplicado) {
-          return res.status(409).json({ error: 'Telefone ja cadastrado para este cliente.' });
-        }
-
-        db.run(
-          'INSERT INTO clientes_telefones (cliente_id, telefone) VALUES (?, ?)',
-          [id, telefoneFormatado],
-          async function (errInsert) {
-            if (errInsert) {
-              console.error('Erro ao inserir telefone extra:', errInsert.message);
-              if (
-                errInsert.code === 'SQLITE_CONSTRAINT' ||
-                String(errInsert.message || '').toLowerCase().includes('unique')
-              ) {
-                return res.status(409).json({ error: 'Telefone ja cadastrado para este cliente.' });
-              }
-              return res.status(500).json({ error: 'Erro ao adicionar telefone.' });
-            }
-
-            try {
-              await touchAtividade({ clienteId: id });
-            } catch (touchErr) {
-              console.error('[touchAtividade] cliente/add-telefone:', touchErr);
-            }
-
-            return res.status(201).json({
-              id: this.lastID,
-              cliente_id: id,
-              telefone: telefoneFormatado,
-            });
-          }
-        );
-      }
-    );
-  });
+    return res.status(500).json({ error: 'Erro ao adicionar telefone.' });
+  }
+  try {
+    await touchAtividade({ clienteId: id });
+  } catch (touchErr) {
+    console.error('[touchAtividade] cliente/add-telefone:', touchErr);
+  }
+  return res.status(201).json(telefoneAdicionado);
 });
 
 /**
  * Buscar cliente por ID
  * (rota param deve vir depois das rotas específicas)
  */
-router.patch('/:id/mal-pagador', (req, res) => {
+router.patch('/:id/mal-pagador', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     return res.status(400).json({ error: 'ID de cliente invalido.' });
@@ -661,30 +614,22 @@ router.patch('/:id/mal-pagador', (req, res) => {
     return res.status(400).json({ error: 'Valor de mal_pagador invalido.' });
   }
 
-  db.run(
-    'UPDATE clientes SET mal_pagador = ? WHERE id = ?',
-    [malPagador, id],
-    async function (err) {
-      if (err) {
-        console.error('Erro ao atualizar marca de mal pagador:', err.message);
-        return res.status(500).json({ error: 'Erro ao atualizar cliente.' });
-      }
-      if (this.changes === 0) {
-        return res.status(404).json({ error: 'Cliente nao encontrado.' });
-      }
-
-      try {
-        await touchAtividade({ clienteId: id });
-      } catch (touchErr) {
-        console.error('[touchAtividade] cliente/mal-pagador:', touchErr);
-      }
-
-      return enviarClientePorId(id, res);
-    }
-  );
+  try {
+    await atualizarMalPagadorCliente({ dbPath: db.getDbPath(), clienteId: id, malPagador });
+  } catch (err) {
+    console.error('Erro ao atualizar marca de mal pagador:', err.message);
+    if (err.status === 404) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+    return res.status(500).json({ error: 'Erro ao atualizar cliente.' });
+  }
+  try {
+    await touchAtividade({ clienteId: id });
+  } catch (touchErr) {
+    console.error('[touchAtividade] cliente/mal-pagador:', touchErr);
+  }
+  return enviarClientePorId(id, res);
 });
 
-router.patch('/:id/notificacoes-cobranca', (req, res) => {
+router.patch('/:id/notificacoes-cobranca', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     return res.status(400).json({ error: 'ID de cliente invalido.' });
@@ -707,29 +652,22 @@ router.patch('/:id/notificacoes-cobranca', (req, res) => {
     ? motivoBruto.trim().slice(0, 2000) || null
     : motivoBruto;
 
-  const sql = temMotivo
-    ? 'UPDATE clientes SET receber_notificacoes_cobranca = ?, motivo_notificacoes_cobranca = ? WHERE id = ?'
-    : 'UPDATE clientes SET receber_notificacoes_cobranca = ? WHERE id = ?';
-  const params = temMotivo ? [receber, motivo, id] : [receber, id];
-
-  db.run(sql, params, async function (err) {
-    if (err) {
-      console.error('Erro ao atualizar notificacoes de cobranca:', err.message);
-      return res.status(500).json({ error: 'Erro ao atualizar notificacoes de cobranca.' });
-    }
-    if (this.changes === 0) {
-      return res.status(404).json({ error: 'Cliente nao encontrado.' });
-    }
-
-    try {
-      await touchAtividade({ clienteId: id });
-      if (receber === 1) await gerarNotificacoesParaData();
-    } catch (updateErr) {
-      console.error('[cliente/notificacoes-cobranca] atualizacao complementar:', updateErr);
-    }
-
-    return enviarClientePorId(id, res);
-  });
+  try {
+    await atualizarPreferenciaCobrancaCliente({
+      dbPath: db.getDbPath(), clienteId: id, receber, temMotivo, motivo,
+    });
+  } catch (err) {
+    console.error('Erro ao atualizar notificacoes de cobranca:', err.message);
+    if (err.status === 404) return res.status(404).json({ error: 'Cliente nao encontrado.' });
+    return res.status(500).json({ error: 'Erro ao atualizar notificacoes de cobranca.' });
+  }
+  try {
+    await touchAtividade({ clienteId: id });
+    if (receber === 1) await gerarNotificacoesParaData();
+  } catch (updateErr) {
+    console.error('[cliente/notificacoes-cobranca] atualizacao complementar:', updateErr);
+  }
+  return enviarClientePorId(id, res);
 });
 
 router.get('/:id', (req, res) => {
@@ -756,7 +694,7 @@ router.get('/:id', (req, res) => {
 /**
  * Cadastrar novo cliente (id manual opcional)
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const {
     id,
     nome, cpf, telefone,
@@ -783,7 +721,7 @@ router.post('/', (req, res) => {
   }
 
   // Função para inserir cliente com id definido
-  const inserir = (novoId) => {
+  const inserir = async (novoId) => {
     const cols = [];
     const placeholders = [];
     const values = [];
@@ -800,8 +738,18 @@ router.post('/', (req, res) => {
 
     const sql = `INSERT INTO clientes (${cols.join(',')}) VALUES (${placeholders.join(',')})`;
 
+    try {
+      await ensureEntityIdentityV1(db);
+      await ensureActionContractReady(db);
+      await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
+    } catch (error) {
+      console.error('Erro ao preparar acao de cliente:', error.message);
+      return res.status(500).json({ error: 'Erro ao salvar cliente.' });
+    }
+
     db.run(sql, values, async function(err) {
       if (err) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
         console.error('Erro ao inserir cliente:', err.message);
 
         // lidar com constraint UNIQUE no CPF (e também ID)
@@ -822,11 +770,32 @@ router.post('/', (req, res) => {
 
       const clienteId = novoId || this.lastID;
       try {
+        const depois = await capturarEstadoCliente(clienteId, { dbHandle: db });
+        await registrarAcaoCliente({
+          tipo: ACTION_TYPES.CLIENTE_CRIADO,
+          clienteId,
+          antes: { cliente: null, telefones: [] },
+          depois,
+          resumo: `Cliente ${clienteId} criado`,
+        }, { dbHandle: db });
+      } catch (actionError) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
+        console.error('Erro ao registrar acao de cliente criado:', actionError.message);
+        return res.status(500).json({ error: 'Erro ao salvar cliente.' });
+      }
+      try {
         await touchAtividade({ clienteId });
       } catch (touchErr) {
         console.error('[touchAtividade] cliente/create:', touchErr);
       }
 
+      try {
+        await runAsync(db, 'COMMIT');
+      } catch (commitError) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
+        console.error('Erro ao confirmar cliente criado:', commitError.message);
+        return res.status(500).json({ error: 'Erro ao salvar cliente.' });
+      }
       return enviarClientePorId(clienteId, res, 201);
     });
   };
@@ -982,6 +951,14 @@ router.put('/:id', exigirProtecao('editar_cliente'), (req, res) => {
         await salvarEdicaoCliente({
           dbPath: db.getDbPath(), idAtual: id, novoId, cpf: cpfClean, sql,
           valores: [novoId, nome, cpfClean, telefone, endereco || '', trabalho || '', categoria_trabalho || '', referencia || '', observacao || '', criadoEm, malPagadorAtualizado, receberNotificacoesAtualizado, temMotivoNotificacoesNoPayload ? 1 : 0, motivoNotificacoesAtualizado, id],
+          registrarAcao: ({ dbHandle, antes, depois }) => registrarAcaoCliente({
+            tipo: ACTION_TYPES.CLIENTE_EDITADO,
+            clienteId: novoId,
+            antes,
+            depois,
+            resumo: `Cliente ${id} editado`,
+            metadata: { cliente_id_anterior: id, cliente_id_posterior: novoId },
+          }, { dbHandle }),
         });
       } catch (err) {
         console.error('Erro ao atualizar cliente:', err.message);
@@ -1005,7 +982,7 @@ router.put('/:id', exigirProtecao('editar_cliente'), (req, res) => {
 router.delete('/:id', exigirProtecao('excluir_cliente'), (req, res) => {
   const id = req.params.id;
 
-  db.get('SELECT id, foto_cliente FROM clientes WHERE id = ?', [id], (findErr, cliente) => {
+  db.get('SELECT id, foto_cliente FROM clientes WHERE id = ?', [id], async (findErr, cliente) => {
     if (findErr) {
       console.error('Erro ao buscar cliente para excluir:', findErr.message);
       return res.status(500).json({ error: 'Erro ao excluir cliente.' });
@@ -1014,15 +991,47 @@ router.delete('/:id', exigirProtecao('excluir_cliente'), (req, res) => {
       return res.status(404).json({ error: 'Cliente não encontrado.' });
     }
 
+    let antes;
+    try {
+      await ensureEntityIdentityV1(db);
+      await ensureActionContractReady(db);
+      await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
+      antes = await capturarEstadoCliente(id, { dbHandle: db });
+      if (!antes.cliente) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
+        return res.status(404).json({ error: 'Cliente nao encontrado.' });
+      }
+      await registrarAcaoCliente({
+        tipo: ACTION_TYPES.CLIENTE_EXCLUIDO,
+        clienteId: Number(id),
+        antes,
+        depois: { cliente: null, telefones: [] },
+        resumo: `Cliente ${id} excluido`,
+      }, { dbHandle: db });
+    } catch (actionError) {
+      await runAsync(db, 'ROLLBACK').catch(() => {});
+      console.error('Erro ao preparar acao de cliente excluido:', actionError.message);
+      return res.status(500).json({ error: 'Erro ao excluir cliente.' });
+    }
+
     return db.run('DELETE FROM clientes WHERE id = ?', [id], async function (err) {
       if (err) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
         console.error('Erro ao excluir cliente:', err.message);
         return res.status(500).json({ error: 'Erro ao excluir cliente.' });
       }
       if (this.changes === 0) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
         return res.status(404).json({ error: 'Cliente não encontrado.' });
       }
 
+      try {
+        await runAsync(db, 'COMMIT');
+      } catch (commitError) {
+        await runAsync(db, 'ROLLBACK').catch(() => {});
+        console.error('Erro ao confirmar cliente excluido:', commitError.message);
+        return res.status(500).json({ error: 'Erro ao excluir cliente.' });
+      }
       await removerArquivoFoto(cliente.foto_cliente);
       return res.json({ message: 'Cliente excluído com sucesso.' });
     });

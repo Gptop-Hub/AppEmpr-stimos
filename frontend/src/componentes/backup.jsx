@@ -15,6 +15,8 @@ export default function Backup() {
   const [estadoLoading, setEstadoLoading] = useState(false);
 
   const [ultimoRestoreInfo, setUltimoRestoreInfo] = useState(null);
+  const [exportandoCelular, setExportandoCelular] = useState(false);
+  const [ultimoExportCelular, setUltimoExportCelular] = useState(null);
 
   const fileInputRef = useRef(null);
   const BACKUP_KEY = import.meta.env.VITE_BACKUP_KEY || '';
@@ -100,6 +102,63 @@ export default function Backup() {
     }
   };
 
+  const exportarParaCelular = async () => {
+    try {
+      setExportandoCelular(true);
+      setStatus('Criando cópia segura e convertendo os dados para o celular...');
+      const resp = await axios.get(`${API_BASE}/backup/mobile-export`, {
+        responseType: 'blob',
+        headers: buildHeaders(),
+        timeout: 300_000,
+      });
+      let filename = 'emprestimos-para-celular.sistema-backup';
+      const cd = resp.headers['content-disposition'];
+      if (cd) {
+        const match = cd.match(/filename="?([^";]+)"?/);
+        if (match) filename = match[1];
+      }
+      let contagens = {};
+      try {
+        const encoded = resp.headers['x-mobile-backup-counts'];
+        if (encoded) contagens = JSON.parse(window.atob(encoded));
+      } catch {
+        // O arquivo já foi validado no backend; o resumo é apenas informativo.
+      }
+      const fotos = Number(resp.headers['x-mobile-backup-photo-count'] || 0);
+      const avisos = Number(resp.headers['x-mobile-backup-warning-count'] || 0);
+      const bytes = new Uint8Array(await resp.data.arrayBuffer());
+      let salvo = true;
+
+      if (window.mobileBackup?.save) {
+        setStatus('Escolha onde salvar o arquivo para o celular...');
+        const result = await window.mobileBackup.save({ filename, bytes });
+        if (!result?.ok) throw new Error(result?.error || 'Não foi possível salvar o arquivo.');
+        if (result.cancelled) {
+          salvo = false;
+          setStatus('Exportação cancelada antes de salvar o arquivo.');
+        }
+      } else {
+        const link = document.createElement('a');
+        link.href = window.URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      if (!salvo) return;
+      setUltimoExportCelular({ contagens, fotos, avisos, filename });
+      setStatus('Arquivo para celular criado e validado.');
+      notify.success('Dados convertidos e validados para o aplicativo Android.');
+      notify.info('Envie este arquivo para a pasta Downloads do celular. No aplicativo Android, vá em Configurações → Backup → Restaurar backup.');
+    } catch (err) {
+      console.error('Erro ao exportar dados para celular', err);
+      setStatus('Não foi possível exportar os dados para o celular.');
+      notify.error(await mensagemErro(err, 'Erro ao converter os dados para o celular.'));
+    } finally {
+      setExportandoCelular(false);
+    }
+  };
+
   const abrirSeletorArquivo = () => {
     if (fileInputRef.current) fileInputRef.current.click();
   };
@@ -141,6 +200,14 @@ export default function Backup() {
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={baixarLocal} style={{ padding: 8 }}>Salvar backup completo</button>
 
+        <button
+          onClick={exportarParaCelular}
+          disabled={exportandoCelular}
+          style={{ padding: 8 }}
+        >
+          {exportandoCelular ? 'Exportando para celular...' : 'Exportar dados para celular'}
+        </button>
+
         <input
           ref={fileInputRef}
           type="file"
@@ -155,6 +222,22 @@ export default function Backup() {
 
         <span style={{ marginLeft: 12 }}>{status}</span>
       </div>
+
+      {ultimoExportCelular && (
+        <div style={{ padding: 12, border: '1px solid #4caf50', borderRadius: 4, maxWidth: '100%' }}>
+          <strong>Exportação para celular concluída</strong>
+          <div style={{ marginTop: 6 }}>arquivo: <code>{ultimoExportCelular.filename}</code></div>
+          <div style={{ marginTop: 6 }}>
+            Clientes: {ultimoExportCelular.contagens.clientes ?? 0} • Empréstimos: {ultimoExportCelular.contagens.emprestimos ?? 0} • Parcelas: {ultimoExportCelular.contagens.parcelas ?? 0} • Pagamentos: {ultimoExportCelular.contagens.pagamentos ?? 0} • Histórico: {ultimoExportCelular.contagens.local_auditoria ?? 0} • Caixa: {ultimoExportCelular.contagens.caixa_movimentos ?? 0} • Fotos: {ultimoExportCelular.fotos}
+          </div>
+          {ultimoExportCelular.avisos > 0 && (
+            <div style={{ marginTop: 6 }}>Há {ultimoExportCelular.avisos} aviso(s) registrado(s) no pacote.</div>
+          )}
+          <div style={{ marginTop: 8 }}>
+            Envie este arquivo para a pasta Downloads do celular. No aplicativo Android, vá em Configurações → Backup → Restaurar backup.
+          </div>
+        </div>
+      )}
 
       {/* Diagnóstico /health */}
       <div style={{ padding: 12, border: '1px solid #ccc', borderRadius: 4, maxWidth: '100%' }}>

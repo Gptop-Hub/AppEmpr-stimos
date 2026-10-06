@@ -9,6 +9,8 @@ const {
 } = require('../services/servicoemprestimo/core');
 const { registrarSaidaEmprestimo } = require('../services/caixaService');
 const { aplicarRenegociacao } = require('../services/renegociacaoService');
+const { ensureActionContractReady } = require('../services/actionIdentityService');
+const { capturarEstadoEmprestimo, registrarAcaoEmprestimo } = require('../services/emprestimoActionService');
 
 function runAsync(database, sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -564,9 +566,9 @@ exports.renegociarInplace = async (req, res) => {
       await runAsync(
         db,
         `INSERT INTO parcelas
-           (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, versao)
-         VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-        [emprestimoId, numero, valorTotal, valorCapital, valorJuros, vencimento, versaoAtual]
+           (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, explicacao, versao)
+          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [emprestimoId, numero, valorTotal, valorCapital, valorJuros, vencimento, nova.explicacao || '', versaoAtual]
       );
 
       await runAsync(
@@ -634,6 +636,7 @@ exports.adicionarCapital = async (req, res) => {
 
   try {
     await ensureHistoricoTable();
+    await ensureActionContractReady(db);
 
     const hasAtivoCol = await tableHasColumn('emprestimos', 'ativo');
     const hasParcelasCol = await tableHasColumn('emprestimos', 'parcelas');
@@ -666,6 +669,8 @@ exports.adicionarCapital = async (req, res) => {
       await runAsync(db, 'ROLLBACK');
       return res.status(400).json({ ok: false, erro: 'Empr\u00e9stimo n\u00e3o est\u00e1 ativo.' });
     }
+
+    const antesAcao = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
 
     const observacaoAtualizada =
       observacao && observacao.trim() ? observacao : emprestimo.observacao || '';
@@ -817,8 +822,8 @@ exports.adicionarCapital = async (req, res) => {
       await runAsync(
         db,
         `INSERT INTO parcelas
-          (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, valor_pago, valor_excedente, juros_adicionais, juros_pendentes, observacao, versao)
-         VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, '', ?)`,
+          (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, valor_pago, valor_excedente, juros_adicionais, juros_pendentes, observacao, explicacao, versao)
+          VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, '', ?, ?)`,
         [
           emprestimoId,
           numero,
@@ -826,6 +831,7 @@ exports.adicionarCapital = async (req, res) => {
           valorCapital,
           valorJuros,
           vencimento,
+           nova.explicacao || '',
           novaVersao
         ]
       );
@@ -922,6 +928,23 @@ exports.adicionarCapital = async (req, res) => {
       },
       db
     );
+
+    const depoisAcao = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
+    await registrarAcaoEmprestimo({
+      tipo: 'CAPITAL_ADICIONADO',
+      origem: 'interface',
+      emprestimoId,
+      clienteId: Number(emprestimo.cliente_id),
+      antes: antesAcao,
+      depois: depoisAcao,
+      parametros: {
+        valor_adicionado: f2(valorAdicionar), qtd_parcelas: qtdParcelas,
+        juros_mes: f2(jurosMes), primeiro_vencimento: primeiroVencimentoISO,
+        observacao, versao_anterior: versaoAtual, versao_nova: novaVersao,
+        historico_id: historicoId,
+      },
+      resumo: `Capital adicionado ao empréstimo ${emprestimoId}`,
+    }, { dbHandle: db });
 
     await runAsync(db, 'COMMIT');
     try {

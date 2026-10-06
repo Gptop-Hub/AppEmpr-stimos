@@ -57,6 +57,32 @@ function applyMigrationIfMissing(db, file, table, column) {
   });
 }
 
+function ensureActionContractV1(db) {
+  const migrationsDir = path.resolve(__dirname, './migrations');
+  const actionSchemaPath = path.join(migrationsDir, 'create_action_tables.sql');
+  if (!fs.existsSync(actionSchemaPath)) {
+    log('Action schema migration file not found. Skipping action contract.');
+    return;
+  }
+  const sql = fs.readFileSync(actionSchemaPath, 'utf8');
+  db.all('PRAGMA table_info(acoes)', (columnsError, columns) => {
+    const hasLegacyActions = !columnsError && Array.isArray(columns) && columns.some((column) => column.name === 'id');
+    const hasIdentity = hasLegacyActions && columns.some((column) => column.name === 'acao_uid');
+    // Em bancos Fase 1, executar o SQL V1 integral falharia nos indices de
+    // colunas ainda inexistentes. O servico abaixo reconstrói o schema com
+    // seguranca; em banco vazio ou já V1, o SQL e idempotente.
+    if (hasLegacyActions && !hasIdentity) {
+      return;
+    }
+    db.exec(sql, (schemaError) => {
+    if (schemaError) {
+      console.error(`[database] Action schema migration failed: ${schemaError.message}`);
+      return;
+    }
+    });
+  });
+}
+
 function applyMigrations(db) {
   // antigas
   applyMigrationIfMissing(db, 'add_coluna_data_pagamento.sql', 'parcelas', 'data_pagamento');
@@ -93,6 +119,9 @@ function applyMigrations(db) {
 
   // ⬇️ NOVO: migração que cria valor_emprestado / valor_atual
   applyMigrationIfMissing(db, 'valor_emprestado.sql', 'emprestimos', 'valor_emprestado');
+  applyMigrationIfMissing(db, 'add_cliente_uid.sql', 'clientes', 'cliente_uid');
+  applyMigrationIfMissing(db, 'add_emprestimo_uid.sql', 'emprestimos', 'emprestimo_uid');
+  applyMigrationIfMissing(db, 'add_parcela_uid.sql', 'parcelas', 'parcela_uid');
 
   // last_activity_at para ordenação "Último trabalhado"
   applyMigrationIfMissing(db, 'add_last_activity_at_clientes.sql', 'clientes', 'last_activity_at');
@@ -120,6 +149,7 @@ function applyMigrations(db) {
     'assistant_cost_settings',
     'id'
   );
+  ensureActionContractV1(db);
 }
 
 function backfillJurosPendentes(db) {

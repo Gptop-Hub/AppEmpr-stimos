@@ -1,6 +1,6 @@
 {
   "name": "app-emprestimos",
-  "version": "0.6.17",
+  "version": "0.6.25",
   "description": "Sistema de Empréstimos transformado em app desktop com Electron",
   "main": "main.js",
   "scripts": {
@@ -17,7 +17,8 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "postinstall": "electron-builder install-app-deps",
-    "publish:win": "node scripts/bump-version-before-publish.js && npm run build:renderer && electron-builder --windows --publish always"
+    "release:notes:check": "node scripts/desktop-release-notes.js --check-next",
+    "publish:win": "node scripts/publish-desktop.js"
   },
   "author": "Seu Nome",
   "license": "MIT",
@@ -27,6 +28,7 @@
     "electron-updater": "^6.6.2",
     "express": "^5.1.0",
     "googleapis": "^157.0.0",
+    "jszip": "^3.10.1",
     "multer": "^2.0.2",
     "sqlite3": "^5.1.7"
   },
@@ -47,6 +49,7 @@
     "artifactName": "App-Emprestimos-${version}-${arch}.${ext}",
     "files": [
       "main.js",
+      "updateInstallSafety.js",
       "preload.js",
       "splash.html",
       "splash.css",
@@ -66,12 +69,21 @@
     "asarUnpack": [
       "**/node_modules/sqlite3/**"
     ],
+    "extraResources": [
+      {
+        "from": "build/desktop-release-notes.md",
+        "to": "desktop-release-notes.md"
+      }
+    ],
     "icon": "build/icon.ico",
     "publish": {
       "provider": "github",
       "owner": "Gptop-Hub",
       "repo": "app-emprestimos",
       "releaseType": "release"
+    },
+    "releaseInfo": {
+      "releaseNotesFile": "desktop-release-notes.md"
     },
     "win": {
       "target": [

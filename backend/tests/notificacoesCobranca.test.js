@@ -24,6 +24,18 @@ function close(db) {
 }
 
 test('migration preserva clientes ativos e a Central oculta notificacoes de cliente silenciado', async (t) => {
+  const OriginalDate = global.Date;
+  const fixedNow = new OriginalDate('2026-08-10T12:00:00.000Z');
+  global.Date = class FixedDate extends OriginalDate {
+    constructor(...args) {
+      super(...(args.length ? args : [fixedNow.getTime()]));
+    }
+
+    static now() {
+      return fixedNow.getTime();
+    }
+  };
+  t.after(() => { global.Date = OriginalDate; });
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'emprestimos-notif-cobranca-'));
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
   process.env.APP_DATA_DIR = tempDir;

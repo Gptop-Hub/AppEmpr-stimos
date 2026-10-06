@@ -8,6 +8,12 @@ import { renderLinhaJuros, getTotalDevidoParcela } from './Emprestimos/helpers.j
 import { isEmprestimoClienteMalPagador } from '../utils/clientRisk';
 import ClienteIdentity from './common/ClienteIdentity.jsx';
 import useClientesCatalogo from './common/useClientesCatalogo.js';
+import {
+  filtrarEmprestimosParaPagamento,
+  getCodigoPagamento,
+  getNomePagamento,
+  isEmprestimoAtivoParaPagamento,
+} from './pagamentoBuscaUtils.js';
 
 // baseURL
 const hojeLocalISO = () => {
@@ -115,12 +121,8 @@ export default function Pagamento() {
     );
   };
 
-  const getCodigo = (emp) =>
-    emp?.emprestimo_num?.trim?.() ||
-    emp?.codigo_cliente?.trim?.() ||
-    `${emp?.cliente_id || '0'}-${emp?.id || '0'}`;
-
-  const getNome = (emp) => emp?.cliente_nome || emp?.nome || 'Desconhecido';
+  const getCodigo = getCodigoPagamento;
+  const getNome = getNomePagamento;
 
   // valor emprestado (sempre o original)
   const getValorEmprestado = (emp) =>
@@ -143,7 +145,9 @@ export default function Pagamento() {
       setPagamentos(pagData);
 
       if (mantainSelecionadoId) {
-        const novo = empData.find((e) => e.id === mantainSelecionadoId);
+        const novo = empData.find(
+          (e) => e.id === mantainSelecionadoId && isEmprestimoAtivoParaPagamento(e)
+        );
         if (novo) {
           setSelecionado(novo);
           const valorEmp = getValorEmprestado(novo);
@@ -166,17 +170,10 @@ export default function Pagamento() {
   };
 
   // Busca
-  const termo = String(busca || '').trim().toLowerCase();
-  const termoId = String(buscaId || '').trim();
-  const listaFiltrada = (Array.isArray(emprestimos) ? emprestimos : [])
-    .filter((emp) => {
-      if (!termo && !termoId) return false;
-      if (termoId && !String(emp?.id ?? '').startsWith(termoId)) return false;
-      if (!termo) return true;
-      const codigo = String(getCodigo(emp)).toLowerCase();
-      const nome = String(getNome(emp)).toLowerCase();
-      return codigo.startsWith(termo) || nome.startsWith(termo);
-    })
+  const listaFiltrada = filtrarEmprestimosParaPagamento(emprestimos, {
+    busca,
+    buscaId,
+  })
     .map((emp) => {
       const codigo = String(getCodigo(emp));
       const [c = '0', s = '0'] = codigo.split('-');
@@ -216,8 +213,13 @@ export default function Pagamento() {
     const empId = Number(empParam);
     if (!empId) return;
 
-    const alvo = emprestimos.find((e) => Number(e.id) === empId);
-    if (!alvo) return;
+    const alvo = emprestimos.find(
+      (e) => Number(e.id) === empId && isEmprestimoAtivoParaPagamento(e)
+    );
+    if (!alvo) {
+      setSelecionado(null);
+      return;
+    }
 
     setSelecionado(alvo);
     const valorEmp = getValorEmprestado(alvo);
@@ -428,7 +430,7 @@ export default function Pagamento() {
               type="text"
               inputMode="numeric"
               placeholder="ID"
-              aria-label="Buscar empréstimo por ID"
+              aria-label="Buscar cliente por ID"
               value={buscaId}
               onChange={(e) => {
                 setBuscaId(e.target.value.replace(/\D/g, ''));

@@ -44,6 +44,10 @@ const MODULE_COPY = Object.freeze({
     title: 'Histórico',
     description: 'Consulte versões anteriores e trilhas de alteração.',
   },
+  '/acoes': {
+    title: 'Ações',
+    description: 'Veja tudo que mudou e consulte o antes e depois de cada operação.',
+  },
 });
 
 const MAIN_MODULE_ORDER = Object.freeze([
@@ -52,6 +56,7 @@ const MAIN_MODULE_ORDER = Object.freeze([
   '/pagamento',
   '/notificacoes',
   '/fluxo-caixa',
+  '/acoes',
 ]);
 
 const SUPPORT_MODULE_ORDER = Object.freeze([

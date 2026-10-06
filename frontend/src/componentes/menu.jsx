@@ -39,6 +39,13 @@ const ICONS = {
       <path d="M12 8v4.4l3 1.8" />
     </>
   ),
+  acoes: (
+    <>
+      <path d="M4.5 7.5A8.5 8.5 0 1 1 4 14" />
+      <path d="M4.5 3.8v3.7h3.7" />
+      <path d="M12 8v4.2l2.8 1.7" />
+    </>
+  ),
   notificacoes: (
     <>
       <path d="M12 4.2c-2.6 0-4.7 2.1-4.7 4.7v2.4L5.8 14v1.1h12.4V14l-1.5-2V8.9c0-2.6-2.1-4.7-4.7-4.7Z" />
@@ -145,6 +152,7 @@ export const MENU_ITEMS = [
   { nome: "Pagamento", to: "/pagamento", icon: "pagamento" },
   { nome: "Empréstimos", to: "/emprestimos", icon: "emprestimos" },
   { nome: "Histórico", to: "/historico", icon: "historico" },
+  { nome: "Ações", to: "/acoes", icon: "acoes" },
   { nome: "Notificações", to: "/notificacoes", icon: "notificacoes" },
   { nome: "Fluxo de Caixa", to: "/fluxo-caixa", icon: "fluxo_caixa" },
   { nome: "Simulação", to: "/simulacao", icon: "simulacao" },

@@ -7,9 +7,12 @@ const {
 } = require('../services/notificacoesService');
 const {
   lerConfig,
-  salvarConfig,
   DEFAULT_CONFIG,
 } = require('../config/notificacoesConfig');
+const {
+  gerarNotificacoesExplicitamente,
+  salvarConfiguracaoNotificacoesComAcao,
+} = require('../services/notificacoesActionService');
 
 // ✅ NOVO: auditoria por data
 const { auditarVencimentosPorData } = require('../services/auditoriaService');
@@ -30,7 +33,7 @@ router.post('/run', async (req, res) => {
       });
     }
 
-    const resultado = await gerarNotificacoesParaData(dataBaseISO);
+    const resultado = await gerarNotificacoesExplicitamente(dataBaseISO);
     res.json({ success: true, ...resultado });
   } catch (err) {
     console.error('[notificacoes/run] erro:', err);
@@ -109,9 +112,10 @@ router.post('/config', async (req, res) => {
       });
     }
 
-    const salvo = await salvarConfig({
-      venceEmBreveDias,
-    });
+    const salvo = await salvarConfiguracaoNotificacoesComAcao(
+      { venceEmBreveDias },
+      'salvar'
+    );
 
     res.json({ success: true, config: salvo });
   } catch (err) {
@@ -122,7 +126,10 @@ router.post('/config', async (req, res) => {
 
 router.post('/config/default', async (req, res) => {
   try {
-    const salvo = await salvarConfig({ ...DEFAULT_CONFIG });
+    const salvo = await salvarConfiguracaoNotificacoesComAcao(
+      { ...DEFAULT_CONFIG },
+      'restaurar_padrao'
+    );
     res.json({ success: true, config: salvo });
   } catch (err) {
     console.error('[notificacoes/config/default] erro:', err);

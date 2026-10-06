@@ -210,6 +210,7 @@ export const calcularPreviewParcelas = ({
   if (!m || m <= 0 || !Number.isFinite(totalNum) || totalNum <= 0) return [];
 
   const taxa = Number.isFinite(taxaNum) ? taxaNum / 100 : 0;
+  const f2 = (value) => Number(Number(value || 0).toFixed(2));
   let saldo = totalNum;
   const preview = [];
 
@@ -228,14 +229,21 @@ export const calcularPreviewParcelas = ({
 
     preview.push({
       numero: i,
-      amortizacao: isNaN(amort) ? 0 : amort,
-      juros: isNaN(jurosVal) ? 0 : jurosVal,
-      total: isNaN(valorParc) ? 0 : valorParc,
+      amortizacao: isNaN(amort) ? 0 : f2(amort),
+      juros: isNaN(jurosVal) ? 0 : f2(jurosVal),
+      total: isNaN(valorParc) ? 0 : f2(valorParc),
       vencimento: vencFormatado,
     });
 
     saldo -= amort;
   }
+
+  const ultima = preview[preview.length - 1];
+  const somaAnteriores = f2(
+    preview.slice(0, -1).reduce((soma, parcela) => soma + Number(parcela.amortizacao || 0), 0)
+  );
+  ultima.amortizacao = f2(f2(totalNum) - somaAnteriores);
+  ultima.total = f2(ultima.amortizacao + Number(ultima.juros || 0));
 
   return preview;
 };

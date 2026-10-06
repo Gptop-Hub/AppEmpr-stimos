@@ -5,6 +5,12 @@ const { exigirProtecao, jurosExigemProtecao } = require('../middleware/protecao'
 const db = require('../models/database');
 const { toExtenso, toISO } = require('../services/dateUtils');
 const { touchAtividade } = require('../utils/touchAtividade');
+const { reagendarParcelas } = require('../services/reagendamentoParcelasService');
+const { runAsync } = require('../utils/sqliteAsync');
+const { ensureActionContractReady } = require('../services/actionIdentityService');
+const { ensureEntityIdentityV1 } = require('../services/entityIdentityService');
+const { capturarEstadoEmprestimo, registrarAcaoEmprestimo } = require('../services/emprestimoActionService');
+const { ACTION_TYPES } = require('../services/actionTypeContract');
 function getAsync(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
@@ -310,7 +316,7 @@ router.put('/:id', exigirProtecao('adicionar_juros_parcela', {
 // POST - adicionar juros adicionais manualmente
 router.post('/:id/juros-adicionais', exigirProtecao('adicionar_juros_parcela', {
   aplicavel: req => jurosExigemProtecao(req.params.id),
-}), (req, res) => {
+}), async (req, res) => {
   const { id } = req.params;
   const { valor, motivo, data } = req.body || {};
   console.log('[juros-adicionais] id:', id);
@@ -343,17 +349,40 @@ router.post('/:id/juros-adicionais', exigirProtecao('adicionar_juros_parcela', {
     return res.status(400).json({ erro: 'Motivo é obrigatório.' });
   }
 
-  db.get('SELECT * FROM parcelas WHERE id = ?', [id], (err, parcela) => {
+  try {
+    await ensureEntityIdentityV1(db);
+    await ensureActionContractReady(db);
+    await runAsync(db, 'BEGIN IMMEDIATE TRANSACTION');
+  } catch (error) {
+    console.error('[juros-adicionais] preparo da acao falhou:', error);
+    return res.status(500).json({ erro: 'Erro ao registrar juros adicionais.' });
+  }
+
+  db.get('SELECT * FROM parcelas WHERE id = ?', [id], async (err, parcela) => {
     if (err) {
+      await runAsync(db, 'ROLLBACK').catch(() => {});
       console.error('[juros-adicionais] select erro:', err && err.stack || err);
       return res.status(500).json({ erro: err.message });
     }
-    if (!parcela) return res.status(404).json({ erro: 'Parcela não encontrada.' });
+    if (!parcela) {
+      await runAsync(db, 'ROLLBACK').catch(() => {});
+      return res.status(404).json({ erro: 'Parcela não encontrada.' });
+    }
 
     const pagoFlag =
       parcela.pago === 1 || parcela.pago === '1' || parcela.pago === true;
     if (pagoFlag) {
+      await runAsync(db, 'ROLLBACK').catch(() => {});
       return res.status(409).json({ erro: 'Parcela já está paga.' });
+    }
+
+    let antes;
+    try {
+      antes = await capturarEstadoEmprestimo(parcela.emprestimo_id, { dbHandle: db });
+    } catch (stateError) {
+      await runAsync(db, 'ROLLBACK').catch(() => {});
+      console.error('[juros-adicionais] erro ao capturar estado anterior:', stateError);
+      return res.status(500).json({ erro: 'Erro ao registrar juros adicionais.' });
     }
 
     const dataISO = toISO(data) || toISO(new Date());
@@ -376,12 +405,42 @@ router.post('/:id/juros-adicionais', exigirProtecao('adicionar_juros_parcela', {
       WHERE id = ?
       `,
       [valorNum, explicacaoNova, id],
-      function (err2) {
+      async function (err2) {
         if (err2) {
+          await runAsync(db, 'ROLLBACK').catch(() => {});
           console.error('[juros-adicionais] update erro:', err2 && err2.stack || err2);
           return res.status(500).json({ erro: err2.message });
         }
         console.log('[juros-adicionais] update changes:', this.changes);
+        try {
+          await touchAtividade({ emprestimoId: parcela.emprestimo_id });
+        } catch (touchErr) {
+          console.error('[touchAtividade] parcela/juros-adicionais:', touchErr);
+        }
+        try {
+          const depois = await capturarEstadoEmprestimo(parcela.emprestimo_id, { dbHandle: db });
+          await registrarAcaoEmprestimo({
+            tipo: ACTION_TYPES.JUROS_ADICIONAIS_ADICIONADOS,
+            origem: 'interface',
+            emprestimoId: Number(parcela.emprestimo_id),
+            clienteId: antes.cliente?.id || depois.cliente?.id || null,
+            antes,
+            depois,
+            parametros: {
+              parcela_id: Number(parcela.id),
+              parcela_uid: parcela.parcela_uid || null,
+              valor_adicionado: valorNum,
+              explicacao: motivoTxt,
+              data: dataISO,
+            },
+            resumo: `Juros adicionais registrados na parcela ${parcela.id}`,
+          }, { dbHandle: db });
+          await runAsync(db, 'COMMIT');
+        } catch (actionError) {
+          await runAsync(db, 'ROLLBACK').catch(() => {});
+          console.error('[juros-adicionais] erro ao registrar acao:', actionError);
+          return res.status(500).json({ erro: 'Erro ao registrar juros adicionais.' });
+        }
         db.get('SELECT * FROM parcelas WHERE id = ?', [id], (err3, row) => {
           if (err3) {
             console.error('[juros-adicionais] select final erro:', err3 && err3.stack || err3);
@@ -393,6 +452,28 @@ router.post('/:id/juros-adicionais', exigirProtecao('adicionar_juros_parcela', {
       }
     );
   });
+});
+
+/**
+ * Fluxo vigente de reagendamento confirmado pela UI.
+ * Uma única operação atômica; os endpoints legados abaixo permanecem apenas
+ * para compatibilidade e não são usados pela lista atual de parcelas.
+ */
+router.post('/reagendar-confirmado', async (req, res) => {
+  try {
+    const resultado = await reagendarParcelas(req.body || {}, {
+      dbHandle: db,
+      touchAtividade,
+    });
+    return res.json({ success: true, ...resultado });
+  } catch (error) {
+    const status = error?.code === 'SCHEDULE_COLLISION' ? 409 : 400;
+    return res.status(status).json({
+      success: false,
+      error: error?.message || 'Não foi possível reagendar os vencimentos.',
+      conflicts: error?.conflicts || [],
+    });
+  }
 });
 
 /**

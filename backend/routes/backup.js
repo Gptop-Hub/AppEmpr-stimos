@@ -15,6 +15,7 @@ const {
   normalizePhotoNames,
   sha256File,
 } = require('../services/backupBundleService');
+const { createMobileBackupFromDesktopBundle } = require('../services/mobileBackupService');
 
 const router = express.Router();
 const log = (...args) => console.info('[backup]', ...args);
@@ -56,6 +57,61 @@ function allSql(db, sql, params = []) {
   });
 }
 
+function isRetryableBackupError(error) {
+  return error && (error.code === 'SQLITE_BUSY' || error.code === 'SQLITE_LOCKED');
+}
+
+async function createOnlineDatabaseSnapshot(destination) {
+  // Never queue the export behind a long-running request on the application's
+  // write connection. SQLite's backup API can create a consistent WAL-aware
+  // snapshot from a separate read-only handle.
+  const db = await openReadOnly(paths.getDbPath());
+  if (!db || typeof db.backup !== 'function') {
+    await closeDb(db).catch(() => {});
+    const error = new Error('A cópia online do SQLite não está disponível.');
+    error.code = 'SQLITE_BACKUP_UNAVAILABLE';
+    throw error;
+  }
+  await fsp.unlink(destination).catch((error) => {
+    if (error && error.code !== 'ENOENT') throw error;
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      const backup = db.backup(destination);
+      const deadline = Date.now() + 30_000;
+      let done = false;
+      const finish = (error) => {
+        if (done) return;
+        done = true;
+        backup.finish(() => error ? reject(error) : resolve());
+      };
+      const step = () => {
+        backup.step(-1, (error, completed) => {
+          if (error && isRetryableBackupError(error)) {
+            if (Date.now() < deadline) {
+              setTimeout(step, 50);
+              return;
+            }
+            const busy = new Error('O banco está ocupado há mais de 30 segundos. Feche outra janela do sistema e tente novamente.');
+            busy.code = 'SQLITE_BACKUP_BUSY';
+            return finish(busy);
+          }
+          if (error) return finish(error);
+          if (!completed) {
+            const incomplete = new Error('A cópia online do SQLite não foi concluída.');
+            incomplete.code = 'SQLITE_BACKUP_INCOMPLETE';
+            return finish(incomplete);
+          }
+          return finish(null);
+        });
+      };
+      step();
+    });
+  } finally {
+    await closeDb(db).catch(() => {});
+  }
+}
+
 async function walCheckpointTruncate() {
   const db = database.getConnection ? database.getConnection() : database;
   await runSql(db, 'PRAGMA foreign_keys=ON;');
@@ -90,6 +146,44 @@ async function createActiveBackup(destination) {
     outputPath: destination,
     referencedPhotoNames: photos,
   });
+}
+
+async function createActiveMobileBackup(destination) {
+  // The SQLite online backup API is intentionally used here instead of a WAL
+  // checkpoint/TRUNCATE. It creates a consistent snapshot without waiting for
+  // every reader of the active database to release its lock.
+  const snapshotDb = path.join(
+    backupsDir,
+    `.mobile-export-db-${timestamp()}-${crypto.randomUUID()}.db`
+  );
+  const desktopSnapshot = path.join(
+    backupsDir,
+    `.mobile-export-source-${timestamp()}-${crypto.randomUUID()}.emprestimos-backup`
+  );
+  try {
+    await createOnlineDatabaseSnapshot(snapshotDb);
+    const snapshotHandle = await openReadOnly(snapshotDb);
+    let photos;
+    try {
+      photos = await referencedPhotoNames(snapshotHandle);
+    } finally {
+      await closeDb(snapshotHandle);
+    }
+    await createBackupBundle({
+      dbPath: snapshotDb,
+      clientPhotosDir,
+      outputPath: desktopSnapshot,
+      referencedPhotoNames: photos,
+    });
+    return await createMobileBackupFromDesktopBundle({
+      desktopBundlePath: desktopSnapshot,
+      outputPath: destination,
+    });
+  } finally {
+    await fsp.unlink(snapshotDb).catch(() => {});
+    await removeWalShm(snapshotDb);
+    await fsp.unlink(desktopSnapshot).catch(() => {});
+  }
 }
 
 async function openReadOnly(filePath) {
@@ -177,6 +271,17 @@ function backupErrorResponse(res, error, fallback) {
     'BACKUP_PHOTO_SET_MISMATCH',
     'INVALID_SQLITE',
     'BACKUP_TOO_LARGE',
+    'INCOMPATIBLE_DESKTOP_DATABASE',
+    'INCOMPATIBLE_CLIENT',
+    'INCOMPATIBLE_LOAN',
+    'INCOMPATIBLE_INSTALLMENT',
+    'INVALID_RELATIONSHIP',
+    'INVALID_MOBILE_BACKUP',
+    'INVALID_MOBILE_SNAPSHOT',
+    'INVALID_MOBILE_RELATIONSHIP',
+    'INVALID_MOBILE_COUNTS',
+    'INVALID_MOBILE_PHOTOS',
+    'SQLITE_BACKUP_BUSY',
   ]);
   const status = error && error.code === 'BACKUP_PHOTOS_MISSING'
     ? 409
@@ -237,6 +342,34 @@ router.get('/download', verificarBackupKey, async (_req, res) => {
   } catch (error) {
     await fsp.unlink(destination).catch(() => {});
     return backupErrorResponse(res, error, 'Falha ao gerar backup completo.');
+  }
+});
+
+router.get('/mobile-export', verificarBackupKey, async (_req, res) => {
+  const source = paths.getDbPath();
+  if (!fs.existsSync(source)) {
+    return res.status(404).json({ success: false, error: 'Arquivo do banco de dados não encontrado.' });
+  }
+  // `res.download()` intentionally rejects dotfiles.  This file is temporary
+  // and is deleted after the response, but it must not begin with a dot or the
+  // request remains open without sending the generated package.
+  const destination = path.join(backupsDir, `mobile-export-temp-${timestamp()}-${crypto.randomUUID()}.sistema-backup`);
+  try {
+    const result = await createActiveMobileBackup(destination);
+    const filename = `emprestimos-para-celular-${new Date().toISOString().slice(0, 10)}.sistema-backup`;
+    res.set('X-Mobile-Backup-Format-Version', String(result.formatVersion));
+    res.set('X-Mobile-Backup-Schema-Version', String(result.schemaVersion));
+    res.set('X-Mobile-Backup-Photo-Count', String(result.photoCount));
+    res.set('X-Mobile-Backup-Counts', Buffer.from(JSON.stringify(result.counts)).toString('base64'));
+    res.set('X-Mobile-Backup-Warning-Count', String(result.warnings.length));
+    log(`Exportação Android validada: ${result.size} bytes, ${result.photoCount} foto(s).`);
+    return res.download(destination, filename, async (error) => {
+      if (error) log(`Erro no download da exportação Android: ${error.message}`);
+      await fsp.unlink(destination).catch(() => {});
+    });
+  } catch (error) {
+    await fsp.unlink(destination).catch(() => {});
+    return backupErrorResponse(res, error, 'Falha ao exportar dados para o celular.');
   }
 });
 

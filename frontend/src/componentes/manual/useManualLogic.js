@@ -123,6 +123,17 @@ export default function useManualLogic({
     return `${nextYear}-${String(nextMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
+  function isCivilISODate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+    const [year, month, day] = String(value).split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return (
+      date.getFullYear() === year &&
+      date.getMonth() === month - 1 &&
+      date.getDate() === day
+    );
+  }
+
   const previewRenegociacao = useMemo(() => {
     const taxaPercent = parseFloat(String(novoTaxa || '0').replace(',', '.'));
     const firstDue = novoVencimento ? parsePrimeiroVencimento(novoVencimento) : null;
@@ -469,11 +480,17 @@ export default function useManualLogic({
 
     // fluxo de juros parcial (valor < juros do mês)
     if (isJurosParcialPreview) {
+      if (!isCivilISODate(novoVencimento)) {
+        notify.warn('Informe um próximo vencimento válido.');
+        return;
+      }
+
       try {
         const resp = await axios.post('/pagamentos/manual-juros-parcial', {
           emprestimoId,
           valorPagamento: valorTotal,
           dataPagamento,
+          proximoVencimento: novoVencimento,
           observacaoParcela: observacaoParcela || '',
           parcela_numero: primeiraAberta?.numero ?? null,
         });

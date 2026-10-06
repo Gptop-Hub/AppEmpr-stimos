@@ -47,7 +47,7 @@ export default function EditarCliente({ cliente, clientesExistentes = [], onCanc
     id: '', nome: '', cpf: '', ddd: '', telefone: '',
     cidade: '', cidadeLivre: '', bairro: '', rua: '', numero: '',
     emPredio: false, nomePredio: '', andar: '', flat: '',
-    empresa: '', categoriaTrabalho: '', ruaEmpresa: '', bairroEmpresa: '', funcao: '', telEmpresa: '',
+    empresa: '', categoriaTrabalho: '', bairroEmpresa: '', ruaEmpresa: '', numeroEmpresa: '', funcao: '', telEmpresa: '',
     referencia: '', observacao: '', criadoEm: '',
     receberNotificacoesCobranca: true, motivoNotificacoesCobranca: ''
   });
@@ -99,6 +99,7 @@ export default function EditarCliente({ cliente, clientesExistentes = [], onCanc
       categoriaTrabalho: cliente.categoria_trabalho || extrairCampo(cliente.trabalho, 'Categoria') || extrairCampo(cliente.trabalho, 'categoria') || '',
       ruaEmpresa: extrairCampo(cliente.trabalho, 'Rua') || extrairCampo(cliente.trabalho, 'rua') || '',
       bairroEmpresa: extrairCampo(cliente.trabalho, 'Bairro') || extrairCampo(cliente.trabalho, 'bairro') || '',
+      numeroEmpresa: extrairCampo(cliente.trabalho, 'Nº') || extrairCampo(cliente.trabalho, 'N°') || extrairCampo(cliente.trabalho, 'Número') || extrairCampo(cliente.trabalho, 'numero') || '',
       funcao: extrairCampo(cliente.trabalho, 'Função') || extrairCampo(cliente.trabalho, 'função') || '',
       telEmpresa: extrairCampo(cliente.trabalho, 'Telefone') || extrairCampo(cliente.trabalho, 'telefone') || '',
 
@@ -231,8 +232,8 @@ export default function EditarCliente({ cliente, clientesExistentes = [], onCanc
       endereco = cliente.endereco || '';
     }
 
-    let trabalho = `Empresa: ${form.empresa}, Categoria: ${form.categoriaTrabalho}, Rua: ${form.ruaEmpresa}, Bairro: ${form.bairroEmpresa}, Função: ${form.funcao}, Telefone: ${form.telEmpresa}`;
-    if (!camposAlterados(form, formInicialRef.current, ['empresa','categoriaTrabalho','ruaEmpresa','bairroEmpresa','funcao','telEmpresa'])) {
+    let trabalho = `Empresa: ${form.empresa}, Categoria: ${form.categoriaTrabalho}, Bairro: ${form.bairroEmpresa}, Rua: ${form.ruaEmpresa}, Nº: ${form.numeroEmpresa}, Função: ${form.funcao}, Telefone: ${form.telEmpresa}`;
+    if (!camposAlterados(form, formInicialRef.current, ['empresa','categoriaTrabalho','bairroEmpresa','ruaEmpresa','numeroEmpresa','funcao','telEmpresa'])) {
       trabalho = cliente.trabalho || '';
     }
     const telefone = normalizarTelefoneCliente(telefoneFormulario) === normalizarTelefoneCliente(cliente.telefone)
@@ -484,10 +485,12 @@ export default function EditarCliente({ cliente, clientesExistentes = [], onCanc
         <input name="empresa" value={form.empresa} onChange={onChange} placeholder="Empresa" />
         <label style={label}>Categoria de trabalho</label>
         <input name="categoriaTrabalho" value={form.categoriaTrabalho} onChange={onChange} placeholder="Categoria de trabalho" />
-        <label style={label}>Rua da empresa</label>
-        <input name="ruaEmpresa" value={form.ruaEmpresa} onChange={onChange} placeholder="Rua da empresa" />
         <label style={label}>Bairro da empresa</label>
         <input name="bairroEmpresa" value={form.bairroEmpresa} onChange={onChange} placeholder="Bairro da empresa" />
+        <label style={label}>Rua da empresa</label>
+        <input name="ruaEmpresa" value={form.ruaEmpresa} onChange={onChange} placeholder="Rua da empresa" />
+        <label style={label}>Número da empresa</label>
+        <input name="numeroEmpresa" value={form.numeroEmpresa} onChange={onChange} placeholder="Número da empresa" />
         <label style={label}>Função</label>
         <input name="funcao" value={form.funcao} onChange={onChange} placeholder="Função" />
         <label style={label}>Telefone da empresa</label>

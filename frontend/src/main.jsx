@@ -14,6 +14,7 @@ const Emprestimos   = React.lazy(() => import('./componentes/Emprestimos'));
 const Vencidos      = React.lazy(() => import('./componentes/vencidos'));
 const Backup        = React.lazy(() => import('./componentes/backup'));
 const Historico     = React.lazy(() => import('./componentes/historico'));
+const Acoes         = React.lazy(() => import('./componentes/acoes'));
 const Atualizacoes  = React.lazy(() => import('./componentes/atualizacoes'));
 const Notificacoes  = React.lazy(() => import('./componentes/notificacoes'));
 const FluxoCaixa    = React.lazy(() => import('./componentes/fluxoCaixa'));
@@ -22,6 +23,7 @@ const NotFound      = React.lazy(() => import('./componentes/notfound'));
 
 const BLOQUEIOS_ACESSO = Object.freeze({
   historico: false,
+  acoes: true,
 });
 
 function BannerAcessoBloqueado({ modulo }) {
@@ -156,6 +158,16 @@ const AppWrapper = ({ theme, onToggleTheme }) => (
                   <BannerAcessoBloqueado modulo="Historico" />
                 ) : (
                   <Historico />
+                )
+              }
+            />
+            <Route
+              path="acoes"
+              element={
+                BLOQUEIOS_ACESSO.acoes ? (
+                  <BannerAcessoBloqueado modulo="Ações" />
+                ) : (
+                  <Acoes />
                 )
               }
             />

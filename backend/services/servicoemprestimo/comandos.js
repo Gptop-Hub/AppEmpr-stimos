@@ -101,10 +101,11 @@ exports.criarEmprestimo = (dados) => {
 
         const sequencia = row && row.total ? row.total + 1 : 1;
         const codigo_cliente = `${cliente_id}-${sequencia}`;
+        const atividadeCriacao = new Date().toISOString();
 
         const sql = `INSERT INTO emprestimos
-                       (cliente_id, codigo_cliente, valor, valor_emprestado, valor_atual, data, modalidade, taxa_juros, observacao, dia_pagamento)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+                       (cliente_id, codigo_cliente, valor, valor_emprestado, valor_atual, data, modalidade, taxa_juros, observacao, dia_pagamento, last_activity_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         db.run(
           sql,
@@ -119,6 +120,7 @@ exports.criarEmprestimo = (dados) => {
             taxa_juros,
             observacao,
             dia_pagamento,
+            atividadeCriacao,
           ],
           function (err2) {
             if (err2) return reject(err2);
@@ -138,8 +140,8 @@ exports.criarEmprestimo = (dados) => {
 
                 const stmt = db.prepare(
                   `INSERT INTO parcelas
-                     (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, observacao, valor_pago, data_pagamento, juros_adicionais, juros_pendentes, versao)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                     (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, observacao, explicacao, valor_pago, data_pagamento, juros_adicionais, juros_pendentes, versao)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 );
 
                 const stmtOriginais = db.prepare(
@@ -159,6 +161,7 @@ exports.criarEmprestimo = (dados) => {
                     p.vencimento_iso,
                     0,
                     '',
+                    p.explicacao || '',
                     null,
                     null,
                     0,

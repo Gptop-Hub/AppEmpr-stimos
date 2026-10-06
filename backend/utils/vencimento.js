@@ -10,8 +10,16 @@ function calcularVencimento(dataCriacao, numeroParcela, diaPagamento) {
   if (!dataCriacao || typeof numeroParcela !== 'number' || typeof diaPagamento !== 'number') return null;
   if (Number.isNaN(numeroParcela) || Number.isNaN(diaPagamento)) return null;
 
-  // converter dataCriacao para Date seguro
-  let inicio = (dataCriacao instanceof Date) ? new Date(dataCriacao.getTime()) : new Date(dataCriacao);
+  // Datas YYYY-MM-DD são datas civis: não use o parser UTC do JavaScript.
+  let inicio;
+  if (dataCriacao instanceof Date) {
+    inicio = new Date(dataCriacao.getTime());
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(String(dataCriacao || ''))) {
+    const [ano, mes, dia] = String(dataCriacao).split('-').map(Number);
+    inicio = new Date(ano, mes - 1, dia);
+  } else {
+    inicio = new Date(dataCriacao);
+  }
   if (isNaN(inicio.getTime())) return null;
 
   // normaliza diaPagamento

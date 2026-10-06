@@ -4,7 +4,13 @@
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const { fork } = require('child_process');
+const {
+  createUpdateInstallPlan,
+  getWindowsUpdateInstallDecision,
+  runUpdateInstallPlan,
+} = require('./updateInstallSafety');
 const { sanitizePath } = require('./backend/utils/paths');
 const {
   isExpectedBackendHealth,
@@ -60,6 +66,12 @@ let splashWindow = null;
 let backendProcess = null;
 let cachedUserDataDir = null;
 let updateStatus = { stage: 'idle' };
+const GITHUB_RELEASES_PATH = '/repos/Gptop-Hub/app-emprestimos/releases?per_page=30';
+const RELEASE_HISTORY_CACHE_MS = 5 * 60 * 1000;
+const INSTALLED_RELEASE_NOTES_FILE = 'desktop-release-notes.md';
+let releaseHistoryCache = null;
+let releaseHistoryCacheAt = 0;
+let releaseHistoryRequest = null;
 const UPDATE_BACKGROUND_CHECK_MS = 60 * 1000;
 let updateCheckIntervalId = null;
 let onWindowFocusCheck = null;
@@ -294,12 +306,141 @@ async function detectRendererDevServer() {
 }
 
 function sendUpdateStatus(payload) {
+  const safePayload = {
+    ...(payload || {}),
+    info: payload && payload.info ? publicUpdateInfo(payload.info) : payload && payload.info,
+  };
   updateStatus = {
     ...(updateStatus || {}),
-    ...(payload || {}),
-    stage: payload && payload.stage ? payload.stage : (updateStatus && updateStatus.stage) || 'idle',
+    ...safePayload,
+    stage: safePayload.stage || (updateStatus && updateStatus.stage) || 'idle',
   };
   try { mainWindow?.webContents.send('updates/status', updateStatus); } catch (_) {}
+}
+
+function normalizedVersion(value) {
+  return String(value || '').trim().replace(/^v/i, '');
+}
+
+const RELEASE_NOTES_VERSION_MARKER = /<!--\s*desktop-release-version:\s*([^\s]+)\s*-->/i;
+
+function releaseNotesForVersion(info) {
+  const availableVersion = normalizedVersion(info && info.version);
+  const releaseNotes = info && info.releaseNotes;
+
+  if (typeof releaseNotes === 'string') {
+    const marker = releaseNotes.match(RELEASE_NOTES_VERSION_MARKER);
+    if (marker && normalizedVersion(marker[1]) !== availableVersion) return null;
+    return releaseNotes.trim() || null;
+  }
+  if (!Array.isArray(releaseNotes) || !availableVersion) return null;
+
+  const matchingNote = releaseNotes.find((item) =>
+    normalizedVersion(item && item.version) === availableVersion
+  );
+  return matchingNote && typeof matchingNote.note === 'string'
+    ? matchingNote.note.trim() || null
+    : null;
+}
+
+function publicUpdateInfo(info) {
+  if (!info || typeof info !== 'object') return null;
+  const version = normalizedVersion(info.version);
+  if (!version) return null;
+
+  return {
+    version,
+    releaseName: typeof info.releaseName === 'string' ? info.releaseName.trim() || null : null,
+    releaseNotes: releaseNotesForVersion(info),
+  };
+}
+
+function installedReleaseNotesPath() {
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, INSTALLED_RELEASE_NOTES_FILE)]
+    : [path.join(__dirname, 'build', INSTALLED_RELEASE_NOTES_FILE)];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function installedReleaseNotes() {
+  const version = normalizedVersion(app.getVersion());
+  const notesPath = installedReleaseNotesPath();
+  if (!version || !notesPath) return null;
+  try {
+    const releaseNotes = releaseNotesForVersion({
+      version,
+      releaseNotes: fs.readFileSync(notesPath, 'utf8'),
+    });
+    return releaseNotes ? { version, releaseNotes } : null;
+  } catch (error) {
+    writeLog('main.log', `[updates/current-release] ${error && error.stack || error}`);
+    return null;
+  }
+}
+
+function isReleaseVersion(value) {
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(normalizedVersion(value));
+}
+
+function publishedReleaseHistory(releases) {
+  if (!Array.isArray(releases)) return [];
+  return releases.reduce((history, release) => {
+    if (!release || release.draft || release.prerelease) return history;
+    const version = normalizedVersion(release.tag_name);
+    if (!isReleaseVersion(version)) return history;
+    const releaseNotes = releaseNotesForVersion({ version, releaseNotes: release.body });
+    if (!releaseNotes) return history;
+    history.push({ version, releaseNotes });
+    return history;
+  }, []);
+}
+
+function fetchPublishedReleaseHistory() {
+  const now = Date.now();
+  if (releaseHistoryCache && now - releaseHistoryCacheAt < RELEASE_HISTORY_CACHE_MS) {
+    return Promise.resolve(releaseHistoryCache);
+  }
+  if (releaseHistoryRequest) return releaseHistoryRequest;
+
+  releaseHistoryRequest = new Promise((resolve, reject) => {
+    const request = https.get({
+      hostname: 'api.github.com',
+      path: GITHUB_RELEASES_PATH,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'app-emprestimos-desktop',
+      },
+      timeout: 8000,
+    }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 512 * 1024) request.destroy(new Error('Resposta de histórico de releases excedeu o limite.'));
+      });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`GitHub respondeu ${response.statusCode || 'sem status'} ao buscar histórico de releases.`));
+          return;
+        }
+        try {
+          resolve(publishedReleaseHistory(JSON.parse(body)));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('Tempo esgotado ao buscar histórico de releases.')));
+    request.on('error', reject);
+  }).then((history) => {
+    releaseHistoryCache = history;
+    releaseHistoryCacheAt = Date.now();
+    return history;
+  }).finally(() => {
+    releaseHistoryRequest = null;
+  });
+
+  return releaseHistoryRequest;
 }
 
 async function checkForUpdatesSafely(source = 'background', throwOnError = false) {
@@ -374,7 +515,10 @@ function setupAutoUpdater() {
     updater.on('update-available', (info) => sendUpdateStatus({ stage: 'available', info }));
     updater.on('update-not-available', (info) => sendUpdateStatus({ stage: 'none', info }));
     updater.on('error', (err) => {
-      sendUpdateStatus({ stage: 'error', message: err?.message || String(err) });
+      sendUpdateStatus({
+        stage: 'error',
+        message: 'Não foi possível verificar ou baixar a atualização. Tente novamente mais tarde.',
+      });
       writeLog('main.log', `[autoUpdater] error: ${err && err.stack || err}`);
     });
     updater.on('download-progress', (p) => {
@@ -771,6 +915,70 @@ function registerIpcs() {
 
   ipcMain.handle('app/version', () => app.getVersion());
 
+  ipcMain.handle('mobile-backup/save', async (event, payload) => {
+    if (!dialog || typeof dialog.showSaveDialog !== 'function') {
+      return { ok: false, error: 'A seleção de local para salvar não está disponível.' };
+    }
+    const requestedName = path.basename(String(payload && payload.filename || '').trim());
+    const filename = requestedName.toLowerCase().endsWith('.sistema-backup')
+      ? requestedName
+      : 'emprestimos-para-celular.sistema-backup';
+    const rawBytes = payload && payload.bytes;
+    let bytes;
+    if (rawBytes instanceof Uint8Array) bytes = Buffer.from(rawBytes.buffer, rawBytes.byteOffset, rawBytes.byteLength);
+    else if (rawBytes instanceof ArrayBuffer) bytes = Buffer.from(rawBytes);
+    else return { ok: false, error: 'O arquivo para salvar é inválido.' };
+    if (!bytes.length || bytes.length > 1024 * 1024 * 1024) {
+      return { ok: false, error: 'O tamanho do arquivo para salvar é inválido.' };
+    }
+
+    const win = resolveZoomWindow(event);
+    const saveOptions = {
+      title: 'Salvar dados para celular',
+      defaultPath: path.join(app.getPath('downloads'), filename),
+      filters: [{ name: 'Backup para celular', extensions: ['sistema-backup'] }],
+    };
+    const selected = win
+      ? await dialog.showSaveDialog(win, saveOptions)
+      : await dialog.showSaveDialog(saveOptions);
+    if (selected.canceled || !selected.filePath) return { ok: true, cancelled: true };
+
+    const target = selected.filePath;
+    let overwriteApproved = false;
+    if (fs.existsSync(target)) {
+      const confirmationOptions = {
+        type: 'warning',
+        title: 'Substituir arquivo?',
+        message: 'Já existe um arquivo com este nome. Deseja substituí-lo?',
+        detail: 'O backup existente será substituído somente se você confirmar.',
+        buttons: ['Cancelar', 'Substituir'],
+        defaultId: 0,
+        cancelId: 0,
+      };
+      const confirmation = win
+        ? await dialog.showMessageBox(win, confirmationOptions)
+        : await dialog.showMessageBox(confirmationOptions);
+      if (confirmation.response !== 1) return { ok: true, cancelled: true };
+      overwriteApproved = true;
+    }
+
+    const temporary = `${target}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      await fs.promises.writeFile(temporary, bytes, { flag: 'wx' });
+      // Refuse a file that appeared after the chooser was confirmed instead
+      // of overwriting it without a new confirmation.
+      if (fs.existsSync(target) && !overwriteApproved) {
+        await fs.promises.unlink(temporary).catch(() => {});
+        return { ok: false, error: 'Um arquivo com este nome surgiu durante a operação. Escolha o local novamente.' };
+      }
+      await fs.promises.rename(temporary, target);
+      return { ok: true, cancelled: false, filename: path.basename(target) };
+    } catch (error) {
+      await fs.promises.unlink(temporary).catch(() => {});
+      return { ok: false, error: error && error.message ? error.message : 'Não foi possível salvar o arquivo.' };
+    }
+  });
+
   ipcMain.handle('zoom/get', (event) => {
     const win = resolveZoomWindow(event);
     if (!win) return { ok: false, error: 'Janela indisponível.' };
@@ -963,7 +1171,7 @@ function registerIpcs() {
       };
     } catch (e) {
       writeLog('main.log', `[updates/check] ${e && e.stack || e}`);
-      return { ok: false, error: e?.message || String(e) };
+      return { ok: false, error: 'Não foi possível verificar atualizações. Tente novamente.' };
     }
   });
 
@@ -972,19 +1180,65 @@ function registerIpcs() {
     try { await updater.downloadUpdate(); return { ok: true }; }
     catch (e) {
       writeLog('main.log', `[updates/download] ${e && e.stack || e}`);
-      return { ok: false, error: e?.message || String(e) };
+      return { ok: false, error: 'Não foi possível baixar a atualização. Tente novamente.' };
     }
   });
 
   ipcMain.handle('updates/apply', async () => {
     if (!updater) return { ok: false, error: 'Updater indisponível (somente em produção).' };
+    let decision;
+    try {
+      decision = await getWindowsUpdateInstallDecision();
+    } catch (e) {
+      writeLog('main.log', `[updates/apply/preflight] ${e && e.stack || e}`);
+      return { ok: false, error: 'Não foi possível confirmar a instalação atual com segurança. A atualização não foi iniciada.' };
+    }
+
+    if (decision.mode === 'blocked') {
+      writeLog('main.log', `[updates/apply/preflight] bloqueado: ${decision.reason}`);
+      return { ok: false, error: 'A instalação atual não pôde ser identificada com segurança. A atualização não foi iniciada para evitar uma segunda instalação.' };
+    }
+
+    if (decision.mode === 'assisted') {
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['Cancelar', 'Abrir instalador assistido'],
+        defaultId: 1,
+        cancelId: 0,
+        title: 'Atualização requer permissão do Windows',
+        message: 'Esta instalação é para todos os usuários e pode exigir UAC.',
+        detail: 'Para preservar a pasta e o escopo existentes, a atualização será aberta no instalador assistido. Nenhuma permissão será contornada.',
+      });
+      if (choice.response !== 1) {
+        return { ok: false, error: 'Atualização cancelada. O aplicativo continua aberto.' };
+      }
+    }
+
+    const plan = createUpdateInstallPlan(decision);
     const backup = await makeSnapshotBackup();
     sendUpdateStatus({ stage: 'backup', result: backup });
-    setTimeout(() => { try { updater.quitAndInstall(false, true); } catch (_) {} }, 500);
-    return { ok: true, backup };
+    setTimeout(() => {
+      try {
+        runUpdateInstallPlan(updater, plan);
+      } catch (e) {
+        writeLog('main.log', `[updates/apply/install] ${e && e.stack || e}`);
+      }
+    }, 500);
+    return { ok: true, backup, mode: decision.mode };
   });
 
   ipcMain.handle('updates/getStatus', () => updateStatus || { stage: 'idle' });
+
+  ipcMain.handle('updates/current-release', () => ({ release: installedReleaseNotes() }));
+
+  ipcMain.handle('updates/history', async () => {
+    try {
+      return { ok: true, releases: await fetchPublishedReleaseHistory() };
+    } catch (error) {
+      writeLog('main.log', `[updates/history] ${error && error.stack || error}`);
+      return { ok: false, releases: [] };
+    }
+  });
 
   ipcMain.handle('assistant/request-microphone', async () => {
     try {

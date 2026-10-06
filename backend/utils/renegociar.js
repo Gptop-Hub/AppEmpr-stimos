@@ -1,6 +1,8 @@
 ﻿const db = require('../models/database'); 
 const gerarParcelas = require('./gerarParcelas');
 const { touchAtividade } = require('./touchAtividade');
+const { ensureActionContractReady } = require('../services/actionIdentityService');
+const { capturarEstadoEmprestimo, registrarAcaoEmprestimo } = require('../services/emprestimoActionService');
 
 function runAsync(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -41,7 +43,11 @@ async function renegociarEmprestimo({
   console.log('[DEBUG] emprestimoId:', emprestimoId);
 
   try {
+    await ensureActionContractReady(db);
     await runAsync('BEGIN TRANSACTION');
+
+    const antesAcao = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
+    if (!antesAcao.emprestimo) throw new Error('Empréstimo não encontrado.');
 
     const empRow = await getAsync(
       'SELECT versao_atual FROM emprestimos WHERE id = ?',
@@ -134,8 +140,8 @@ async function renegociarEmprestimo({
 
       await runAsync(
         `INSERT INTO parcelas 
-          (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, parcela_origem_numero, valor_pago, valor_excedente, pago, versao)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, parcela_origem_numero, valor_pago, valor_excedente, pago, explicacao, versao)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           emprestimoId,
           parcela.numero,
@@ -147,11 +153,23 @@ async function renegociarEmprestimo({
           valorPago,
           valorExcedente,
           pagoFlag,
+          parcela.explicacao || '',
           versaoAtual
         ]
       );
     }
 
+    const depoisAcao = await capturarEstadoEmprestimo(emprestimoId, { dbHandle: db });
+    await registrarAcaoEmprestimo({
+      tipo: 'EMPRESTIMO_RENEGOCIADO', origem: 'interface',
+      emprestimoId: Number(emprestimoId), clienteId: Number(antesAcao.emprestimo.cliente_id),
+      antes: antesAcao, depois: depoisAcao,
+      parametros: {
+        valor: novoCapital, parcelas: novaQtdParcelas, taxa_juros: novaTaxaJuros,
+        data: dataInicio, dia_pagamento: diaPagamento, versao: versaoAtual,
+      },
+      resumo: `Empréstimo ${emprestimoId} renegociado`,
+    }, { dbHandle: db });
     await runAsync('COMMIT');
     try {
       await touchAtividade({ emprestimoId });

@@ -127,7 +127,7 @@ export default function EditarEmprestimo({ emprestimoId, onClose }) {
   const [buscaClienteId, setBuscaClienteId] = useState("");
   const [mostrarListaClientes, setMostrarListaClientes] = useState(false);
 
-  const [modalidade, setModalidade] = useState("parcelado");
+  const modalidade = "parcelado";
   const [valor, setValor] = useState("");
   const [data, setData] = useState("");
   const [parcelas, setParcelas] = useState(5);
@@ -156,7 +156,6 @@ export default function EditarEmprestimo({ emprestimoId, onClose }) {
 
         setClientes(listaClientes);
         setClienteId(emprestimo.cliente_id != null ? String(emprestimo.cliente_id) : "");
-        setModalidade(emprestimo.modalidade || "parcelado");
         setValor(formatarMoedaInput(Number(emprestimo.valor || 0).toFixed(2)));
         setData(toISODateOnly(emprestimo.data));
         setTaxaJuros(String(emprestimo.taxa_juros ?? "0"));
@@ -392,29 +391,7 @@ export default function EditarEmprestimo({ emprestimoId, onClose }) {
           <>
             <div style={sectionStyle}>
               <div style={sectionTitleStyle}>
-                <span>{"\u{1F464} Cliente & Modalidade"}</span>
-              </div>
-
-              <div style={inputWrapStyle}>
-                <span style={labelStyle}>Modalidade</span>
-                <div>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginRight: 16 }}>
-                    <input
-                      type="radio"
-                      checked={modalidade === "parcelado"}
-                      onChange={() => setModalidade("parcelado")}
-                    />
-                    Parcelado
-                  </label>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                    <input
-                      type="radio"
-                      checked={modalidade === "aberto"}
-                      onChange={() => setModalidade("aberto")}
-                    />
-                    Em aberto
-                  </label>
-                </div>
+                <span>{"\u{1F464} Cliente"}</span>
               </div>
 
               <div style={inputWrapStyle}>
@@ -636,25 +613,6 @@ export default function EditarEmprestimo({ emprestimoId, onClose }) {
                       </li>
                     )}
                   </ul>
-                </div>
-              </div>
-            )}
-
-            {modalidade === "aberto" && (
-              <div style={sectionStyle}>
-                <div style={sectionTitleStyle}>
-                  <span>{"\u{1F4D1} Juros para emprestimo em aberto"}</span>
-                </div>
-
-                <div style={inputWrapStyle}>
-                  <label style={labelStyle}>Taxa de juros (%)</label>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={taxaJuros}
-                    onChange={(e) => setTaxaJuros(e.target.value.replace(/[^0-9.,]/g, ""))}
-                    style={fieldStyle}
-                  />
                 </div>
               </div>
             )}

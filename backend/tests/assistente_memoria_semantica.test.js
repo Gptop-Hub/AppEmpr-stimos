@@ -179,6 +179,12 @@ test('COUNT, SUM e AVG calculam sobre o mesmo escopo materializado', async () =>
   const averaged = await executeBoundAnalysis({ entityType: 'emprestimo', scopeSql: loanScopeSql, analyticSql: avgSql });
   assert.equal(summed.analytic.returned_rows, 1);
   assert.equal(averaged.analytic.returned_rows, 1);
+
+  const emptyAggregate = await runtimeTools.executeReadOnlySql({
+    sql: 'SELECT COUNT(scope_root.id) AS total, COALESCE(SUM(scope_root.valor), 0) AS soma, COALESCE(AVG(scope_root.valor), 0) AS media FROM emprestimos AS scope_root JOIN semantic_result_set AS scope_ids ON scope_ids.entity_id = scope_root.id',
+    semanticResultSet: { result_set_id: 'escopo-vazio', entity_type: 'emprestimo', entity_ids: [] },
+  });
+  assert.deepEqual(emptyAggregate.rows, [{ total: 0, soma: 0, media: 0 }]);
 });
 
 test('analise divergente e rejeitada e ranking reutilizado permanece dentro do escopo', async () => {
@@ -192,6 +198,12 @@ test('analise divergente e rejeitada e ranking reutilizado permanece dentro do e
   const ranked = await executeBoundAnalysis({ entityType: 'cliente', scopeSql, analyticSql: rankingSql });
   const ids = new Set(ranked.scope.entity_ids);
   assert.ok(ranked.analytic.rows.every((row) => ids.has(Number(row.cliente_id))));
+
+  const emptyRanking = await runtimeTools.executeReadOnlySql({
+    sql: rankingSql,
+    semanticResultSet: { result_set_id: 'escopo-vazio', entity_type: 'cliente', entity_ids: [] },
+  });
+  assert.deepEqual(emptyRanking.rows, []);
 });
 
 test('reset explicito limpa memoria sem interpretar a linguagem do usuario', () => {

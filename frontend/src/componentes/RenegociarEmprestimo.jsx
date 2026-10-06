@@ -21,6 +21,7 @@ export default function RenegociarEmprestimo({
 
   function calcularParcelasPreview(capitalTotal, taxa, qtdParcelas) {
     if (qtdParcelas <= 0) return [];
+    const f2 = (value) => Number(Number(value || 0).toFixed(2));
     const parcelasCalc = [];
     const capitalParcela = capitalTotal / qtdParcelas;
 
@@ -30,11 +31,18 @@ export default function RenegociarEmprestimo({
 
       parcelasCalc.push({
         numero: i + 1,
-        valor: valorTotal,
-        capital: capitalParcela,
-        juros: jurosParcela,
+        valor: f2(valorTotal),
+        capital: f2(capitalParcela),
+        juros: f2(jurosParcela),
       });
     }
+
+    const ultima = parcelasCalc[parcelasCalc.length - 1];
+    const somaAnteriores = f2(
+      parcelasCalc.slice(0, -1).reduce((soma, parcela) => soma + Number(parcela.capital || 0), 0)
+    );
+    ultima.capital = f2(f2(capitalTotal) - somaAnteriores);
+    ultima.valor = f2(ultima.capital + Number(ultima.juros || 0));
 
     return parcelasCalc;
   }

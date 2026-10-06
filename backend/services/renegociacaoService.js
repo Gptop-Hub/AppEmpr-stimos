@@ -3,6 +3,8 @@ const gerarParcelas = require('../utils/gerarParcelas');
 const { runAsync, getAsync, allAsync } = require('../utils/sqliteAsync');
 const { calcularCapitalRestanteComRegra, toNumberSafe } = require('./servicoemprestimo/core');
 const { claimActionExecution } = require('./assistente/actions/actionIdempotency');
+const { ensureActionContractReady } = require('./actionIdentityService');
+const { capturarEstadoEmprestimo, registrarAcaoEmprestimo } = require('./emprestimoActionService');
 
 function actionError(code, message) { const error = new Error(message); error.code = code; return error; }
 function money(value) { const number = Number(value); return Number.isFinite(number) ? Number(number.toFixed(2)) : null; }
@@ -75,7 +77,7 @@ async function loadState(terms, dbHandle) {
     numero: Number(parcela.numero || index + 1), valor_total: money(parcela.valor_total),
     valor_capital: money(parcela.valor_capital), valor_juros: money(parcela.valor_juros),
     vencimento: parcela.vencimento_iso || parcela.vencimento || null, pago: 0, valor_pago: 0,
-    valor_excedente: 0, juros_adicionais: 0, juros_pendentes: 0, versao: versaoAtual + 1,
+    valor_excedente: 0, juros_adicionais: 0, juros_pendentes: 0, explicacao: parcela.explicacao || '', versao: versaoAtual + 1,
   }));
   const capitalAnterior = money(calcularCapitalRestanteComRegra(emprestimo, parcelas));
   const totalPrevisto = money(novasParcelas.reduce((sum, parcela) => sum + Number(parcela.valor_total || 0), 0));
@@ -144,12 +146,14 @@ async function columnNames(dbHandle, table) { return new Set((await allAsync(dbH
 
 async function aplicarRenegociacao(input, expectedFingerprint, { dbHandle, touchAtividade = null, idempotencyKey = null } = {}) {
   if (!dbHandle) throw new Error('dbHandle é obrigatório.');
+  await ensureActionContractReady(dbHandle);
   await runAsync(dbHandle, 'BEGIN IMMEDIATE TRANSACTION');
   try {
     const prepared = await calcularPreviewRenegociacao(input, { dbHandle });
     if (expectedFingerprint && prepared.state_fingerprint !== expectedFingerprint) throw actionError('state_changed', 'Os dados mudaram desde o preview. Gere uma nova confirmação.');
     const terms = prepared.arguments;
     const { state } = prepared;
+    const antesAcao = await capturarEstadoEmprestimo(terms.emprestimo_id, { dbHandle });
     await ensureHistoricoTable(dbHandle);
     await claimActionExecution(dbHandle, { key: idempotencyKey, action: input.action || 'renegociar_emprestimo', emprestimoId: terms.emprestimo_id });
     const historico = await runAsync(dbHandle, `INSERT INTO renegociacoes_historico
@@ -167,6 +171,7 @@ async function aplicarRenegociacao(input, expectedFingerprint, { dbHandle, touch
     await runAsync(dbHandle, 'DELETE FROM parcelas WHERE emprestimo_id = ?', [terms.emprestimo_id]);
     await runAsync(dbHandle, 'DELETE FROM parcelas_originais WHERE emprestimo_id = ?', [terms.emprestimo_id]);
     const columns = await columnNames(dbHandle, 'emprestimos');
+    const parcelaColumns = await columnNames(dbHandle, 'parcelas');
     const values = { valor: terms.valor, taxa_juros: terms.taxa_juros, observacao: terms.observacao || state.emprestimo.observacao || '', valor_atual: terms.valor, parcelas: terms.parcelas, data: terms.data, capital_restante: terms.valor, versao_atual: state.novaVersao, dia_pagamento: Number(terms.data_pagamento.slice(8, 10)) };
     const sets = Object.keys(values).filter((column) => columns.has(column)).map((column) => `${column} = ?`);
     const params = Object.keys(values).filter((column) => columns.has(column)).map((column) => values[column]);
@@ -176,11 +181,42 @@ async function aplicarRenegociacao(input, expectedFingerprint, { dbHandle, touch
     const clientColumns = await columnNames(dbHandle, 'clientes');
     if (clientColumns.has('last_activity_at')) await runAsync(dbHandle, "UPDATE clientes SET last_activity_at = datetime('now') WHERE id = ?", [state.emprestimo.cliente_id]);
     for (const parcela of state.novasParcelas) {
-      await runAsync(dbHandle, `INSERT INTO parcelas (emprestimo_id, numero, valor_total, valor_capital, valor_juros, vencimento, pago, valor_pago, valor_excedente, juros_adicionais, juros_pendentes, observacao, versao)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, '', ?)`, [terms.emprestimo_id, parcela.numero, parcela.valor_total, parcela.valor_capital, parcela.valor_juros, parcela.vencimento, state.novaVersao]);
+      const camposParcela = [
+        'emprestimo_id', 'numero', 'valor_total', 'valor_capital', 'valor_juros',
+        'vencimento', 'pago', 'valor_pago', 'valor_excedente', 'juros_adicionais',
+        'juros_pendentes', 'observacao',
+      ];
+      const valoresParcela = [
+        terms.emprestimo_id, parcela.numero, parcela.valor_total, parcela.valor_capital,
+        parcela.valor_juros, parcela.vencimento, 0, 0, 0, 0, 0, '',
+      ];
+      if (parcelaColumns.has('explicacao')) {
+        camposParcela.push('explicacao');
+        valoresParcela.push(parcela.explicacao || '');
+      }
+      camposParcela.push('versao');
+      valoresParcela.push(state.novaVersao);
+      await runAsync(
+        dbHandle,
+        `INSERT INTO parcelas (${camposParcela.join(', ')}) VALUES (${camposParcela.map(() => '?').join(', ')})`,
+        valoresParcela
+      );
       await runAsync(dbHandle, `INSERT INTO parcelas_originais (emprestimo_id, numero, valor_total, valor_capital, valor_juros, valor_pago, valor_excedente, pago, data_pagamento)
         VALUES (?, ?, ?, ?, ?, 0, 0, 0, NULL)`, [terms.emprestimo_id, parcela.numero, parcela.valor_total, parcela.valor_capital, parcela.valor_juros]);
     }
+    const depoisAcao = await capturarEstadoEmprestimo(terms.emprestimo_id, { dbHandle });
+    await registrarAcaoEmprestimo({
+      tipo: 'EMPRESTIMO_RENEGOCIADO', origem: 'interface',
+      emprestimoId: terms.emprestimo_id, clienteId: Number(state.emprestimo.cliente_id),
+      antes: antesAcao, depois: depoisAcao,
+      parametros: {
+        valor: terms.valor, parcelas: terms.parcelas, taxa_juros: terms.taxa_juros,
+        data: terms.data, data_pagamento: terms.data_pagamento, observacao: terms.observacao,
+        versao_anterior: state.versaoAtual, versao_nova: state.novaVersao,
+        historico_id: Number(historico.lastID), pagamento_id: terms.pagamento_id,
+      },
+      resumo: `Empréstimo ${terms.emprestimo_id} renegociado`,
+    }, { dbHandle });
     await runAsync(dbHandle, 'COMMIT');
     if (typeof touchAtividade === 'function') {
       try { await touchAtividade({ emprestimoId: terms.emprestimo_id }); } catch (_) { /* atividade é pós-commit e não altera o acordo */ }

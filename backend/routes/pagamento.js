@@ -11,6 +11,13 @@ const aplicarQuitarEmprestimo = require('../utils/quitar_emprestimo');
 const { touchAtividade } = require('../utils/touchAtividade');
 const { registrarEntradaPagamento } = require('../services/caixaService');
 const { splitNormalPaymentFromParcela } = require('../services/pagamentos/paymentSplit');
+const {
+  executarPagamentoNormal,
+  executarPagamentoManual,
+  executarPagamentoJuros,
+  executarJurosParciais,
+  executarQuitacao,
+} = require('../services/paymentActionService');
 
 function getAsync(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -33,6 +40,17 @@ function f2(value) {
 function toMoney(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) ? f2(n) : 0;
+}
+
+function isCivilISODate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+  const [year, month, day] = String(value).split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
 }
 
 function parcelaJurosTotal(parcela) {
@@ -454,6 +472,63 @@ router.post('/', async (req, res) => {
     if (Number.isFinite(n)) parcela_origem = Math.max(0, Math.trunc(n));
   }
 
+  // Fase 2D-1: negócio, caixa, atividade e ação têm o mesmo commit.
+  // Juros, quitação e os demais tipos permanecem no caminho legado.
+  if (tipoPagamento === 'normal') {
+    try {
+      const resultado = await executarPagamentoNormal({
+        emprestimoId: Number(emprestimo_id), valor, data, observacao, parcelaOrigem: parcela_origem,
+      });
+      return res.json({
+        id: resultado.pagamentoId,
+        emprestimo_id,
+        valor,
+        data,
+        info: `Parcelas atualizadas: ${resultado.updates.length}`,
+      });
+    } catch (error) {
+      console.error('[ERRO] pagamento normal transacional:', error);
+      return res.status(/Nenhuma parcela pendente|não encontrado/i.test(error.message) ? 400 : 500)
+        .json({ erro: error.message || 'Erro ao processar pagamento normal' });
+    }
+  }
+
+  if (tipoPagamento === 'manual' && Array.isArray(abatimentos) && abatimentos.length > 0) {
+    try {
+      const resultado = await executarPagamentoManual({
+        emprestimoId: Number(emprestimo_id), valor, abatimentos, data, observacao,
+        parcelaOrigem: parcela_origem,
+      });
+      return res.json({
+        pagamentoId: resultado.pagamentoId,
+        saldoRestante: resultado.saldoRestante,
+        parcelasAtualizadas: resultado.parcelasAtualizadas,
+      });
+    } catch (error) {
+      console.error('[ERRO] pagamento manual transacional:', error);
+      return res.status(500).json({ erro: error.message || 'Erro ao processar pagamento manual' });
+    }
+  }
+
+  if (tipoPagamento === 'juros' || tipoPagamento === 'quitar') {
+    try {
+      const executar = tipoPagamento === 'juros' ? executarPagamentoJuros : executarQuitacao;
+      const resultado = await executar({
+        emprestimoId: Number(emprestimo_id), valor, data, observacao, parcelaOrigem: parcela_origem,
+      });
+      return res.json({
+        id: resultado.pagamentoId,
+        emprestimo_id,
+        valor,
+        data,
+        info: `Parcelas atualizadas: ${resultado.updates.length}`,
+      });
+    } catch (error) {
+      console.error(`[ERRO] ${tipoPagamento} transacional:`, error);
+      return res.status(400).json({ erro: error.message || 'Erro ao processar pagamento' });
+    }
+  }
+
   // Confirma modalidade
   db.get('SELECT modalidade FROM emprestimos WHERE id = ?', [emprestimo_id], (err, emprestimo) => {
     if (err || !emprestimo) {
@@ -844,6 +919,26 @@ router.post('/manual', async (req, res) => {
   }
 
   try {
+    const resultado = await executarPagamentoManual({
+      emprestimoId: Number(emprestimoId),
+      valor: Number(valorPagamento),
+      abatimentos,
+      data: dataPagamento,
+      observacao,
+      observacaoParcela,
+      parcelaOrigem: parcela_origem,
+    });
+    return res.json({
+      pagamentoId: resultado.pagamentoId,
+      saldoRestante: resultado.saldoRestante,
+      parcelasAtualizadas: resultado.parcelasAtualizadas,
+    });
+  } catch (error) {
+    console.error('[ERRO] pagamento manual transacional:', error);
+    return res.status(500).json({ erro: error.message || 'Erro ao processar pagamento manual' });
+  }
+
+  try {
     const parcelaIdsAbatimento = (abatimentos || [])
       .map((item) => item && (item.parcelaId || item.id))
       .filter((id) => id != null);
@@ -952,6 +1047,7 @@ router.post('/manual-juros-parcial', async (req, res) => {
       valorPagamento,
       data: dataBody,
       dataPagamento: dataPagamentoBody,
+      proximoVencimento: proximoVencimentoBody,
       observacaoParcela = '',
       parcela_numero: parcelaNumeroBody,
       parcela_origem: parcelaOrigemBody,
@@ -959,6 +1055,12 @@ router.post('/manual-juros-parcial', async (req, res) => {
 
     if (!emprestimoId || !valorPagamento) {
       return res.status(400).json({ erro: 'Dados incompletos.' });
+    }
+
+    if (!isCivilISODate(proximoVencimentoBody)) {
+      return res.status(400).json({
+        erro: 'Informe um próximo vencimento válido no formato YYYY-MM-DD.',
+      });
     }
 
     // normaliza data para o mesmo formato usado no resto do sistema
@@ -972,11 +1074,31 @@ router.post('/manual-juros-parcial', async (req, res) => {
       if (Number.isFinite(n)) parcela_origem = Math.max(0, Math.trunc(n));
     }
 
+    try {
+      const resultado = await executarJurosParciais({
+        emprestimoId: Number(emprestimoId),
+        valor: Number(valorPagamento),
+        data: dataPagamentoISO,
+        proximoVencimento: proximoVencimentoBody,
+        observacaoParcela,
+        parcelaOrigem: parcela_origem,
+      });
+      return res.json({
+        ok: true,
+        pagamentoId: resultado.pagamentoId,
+        ...resultado.resultado,
+      });
+    } catch (error) {
+      console.error('[ERRO] /manual-juros-parcial transacional:', error);
+      return res.status(400).json({ erro: error.message || 'Falha no juros parcial.' });
+    }
+
     const resp = await pagarJurosParcial(
       Number(emprestimoId),
       Number(valorPagamento),
       dataPagamentoISO,
-      observacaoParcela
+      observacaoParcela,
+      proximoVencimentoBody
     );
 
     // 🔵 anexa observação do usuário na parcela afetada (igual fluxo /manual)

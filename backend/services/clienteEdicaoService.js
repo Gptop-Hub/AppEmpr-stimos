@@ -1,4 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
+const { ensureActionContractReady } = require('./actionIdentityService');
+const { ensureEntityIdentityV1 } = require('./entityIdentityService');
+const { capturarEstadoCliente } = require('./clienteActionService');
 
 function clienteIdValido(value) {
   if (!['string', 'number'].includes(typeof value) || !/^\d+$/.test(String(value).trim())) return null;
@@ -12,7 +15,7 @@ function erro(status, message) {
 
 // Uma conexão exclusiva impede que operações de outras requisições entrem
 // na transação de edição e sejam afetadas por seu eventual rollback.
-async function salvarEdicaoCliente({ dbPath, idAtual, novoId, cpf, sql, valores }) {
+async function salvarEdicaoCliente({ dbPath, idAtual, novoId, cpf, sql, valores, registrarAcao = null }) {
   const connection = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE);
   connection.configure('busyTimeout', 5000);
   const run = (query, params = []) => new Promise((resolve, reject) => {
@@ -27,6 +30,10 @@ async function salvarEdicaoCliente({ dbPath, idAtual, novoId, cpf, sql, valores 
   let emTransacao = false;
   try {
     await run('PRAGMA foreign_keys = ON');
+    if (registrarAcao) {
+      await ensureEntityIdentityV1(connection);
+      await ensureActionContractReady(connection);
+    }
     await run('BEGIN IMMEDIATE');
     emTransacao = true;
     // Os telefones antigos não possuem ON UPDATE CASCADE. Adiamos a
@@ -35,6 +42,9 @@ async function salvarEdicaoCliente({ dbPath, idAtual, novoId, cpf, sql, valores 
     if (!await get('SELECT id FROM clientes WHERE id = ?', [idAtual])) {
       throw erro(404, 'Cliente não encontrado.');
     }
+    const antes = registrarAcao
+      ? await capturarEstadoCliente(idAtual, { dbHandle: connection })
+      : null;
     if (novoId !== idAtual && await get('SELECT id FROM clientes WHERE id = ?', [novoId])) {
       throw erro(409, `Já existe um cliente com o ID ${novoId}.`);
     }
@@ -50,6 +60,10 @@ async function salvarEdicaoCliente({ dbPath, idAtual, novoId, cpf, sql, valores 
       await run('UPDATE clientes_telefones SET cliente_id = ? WHERE cliente_id = ?', [novoId, idAtual]);
     }
     await run(sql, valores);
+    if (registrarAcao) {
+      const depois = await capturarEstadoCliente(novoId, { dbHandle: connection });
+      await registrarAcao({ dbHandle: connection, antes, depois });
+    }
     await run('COMMIT');
     emTransacao = false;
   } catch (err) {

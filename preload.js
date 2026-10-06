@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('updates', {
   download: () => ipcRenderer.invoke('updates/download'),
   apply: () => ipcRenderer.invoke('updates/apply'),
   getStatus: () => ipcRenderer.invoke('updates/getStatus'),
+  currentRelease: () => ipcRenderer.invoke('updates/current-release'),
+  history: () => ipcRenderer.invoke('updates/history'),
   onStatus: (cb) => {
     const handler = (_e, payload) => cb(payload);
     ipcRenderer.on('updates/status', handler);
@@ -28,6 +30,10 @@ contextBridge.exposeInMainWorld('updates', {
 
 contextBridge.exposeInMainWorld('appInfo', {
   version: () => ipcRenderer.invoke('app/version')
+});
+
+contextBridge.exposeInMainWorld('mobileBackup', {
+  save: (payload) => ipcRenderer.invoke('mobile-backup/save', payload),
 });
 
 contextBridge.exposeInMainWorld('appZoom', {

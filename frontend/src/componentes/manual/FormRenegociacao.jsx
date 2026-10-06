@@ -111,8 +111,24 @@ export default function FormRenegociacao({
         </>
       )}
 
-      {/* Datas: agora também somem no modo juros parcial */}
-      {!isJurosParcialPreview && (
+      {isJurosParcialPreview ? (
+        <div>
+          <div className="text-xs mb-1" style={labelMutedStyle}>
+            Próximo vencimento
+          </div>
+          <input
+            type="date"
+            value={novoVencimento}
+            onChange={(e) => setNovoVencimento(e.target.value)}
+            required
+            className="w-full border rounded-md px-3 py-2"
+            style={inputStyle}
+          />
+          <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+            Confirme ou edite a data da próxima cobrança antes de registrar.
+          </div>
+        </div>
+      ) : (
         <div className="grid grid-cols-2 gap-3">
           <div>
             <div className="text-xs mb-1" style={labelMutedStyle}>

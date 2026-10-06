@@ -60,6 +60,11 @@ app.use(cors({
     'Content-Disposition',
     'X-Backup-Format-Version',
     'X-Backup-Photo-Count',
+    'X-Mobile-Backup-Format-Version',
+    'X-Mobile-Backup-Schema-Version',
+    'X-Mobile-Backup-Photo-Count',
+    'X-Mobile-Backup-Counts',
+    'X-Mobile-Backup-Warning-Count',
   ],
 }));
 
@@ -83,6 +88,7 @@ const caixaRoutes = require('./routes/caixa');
 const assistenteRoutes = require('./routes/assistente');
 const sistemaRoutes = require('./routes/sistema');
 const vencidosRoutes = require('./routes/vencidos');
+const acoesRoutes = require('./routes/acoes');
 
 blog('[backend] Arquivos de rotas importados');
 
@@ -103,6 +109,7 @@ app.use('/assistente', assistenteRoutes);
 app.use('/sistema', sistemaRoutes);
 app.use('/seguranca', require('./routes/seguranca').criarSegurancaRouter());
 app.use('/vencidos', vencidosRoutes);
+app.use('/acoes', acoesRoutes);
 
 blog('[backend] Rotas principais registradas');
 

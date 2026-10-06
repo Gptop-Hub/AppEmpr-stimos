@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { useLocation, useNavigate } from "react-router-dom";
 import ParcelaList from "./Emprestimos/ParcelaList";
+import DetalhesTotalPagoModal from "./Emprestimos/DetalhesTotalPagoModal.jsx";
 import RenegociacaoInlinePanel from "./Emprestimos/RenegociacaoInlinePanel.jsx";
 import {
   formatarMoeda,
@@ -35,6 +36,8 @@ export default function Historico() {
   const [quitadosClientesAbertos, setQuitadosClientesAbertos] = useState({});
   const [parcelasQuitadasAbertas, setParcelasQuitadasAbertas] = useState({});
   const [renegQuitadasAbertas, setRenegQuitadasAbertas] = useState({});
+  const [emprestimoTotalPagoSelecionado, setEmprestimoTotalPagoSelecionado] =
+    useState(null);
   const [buscaQuitados, setBuscaQuitados] = useState("");
   const [buscaQuitadosId, setBuscaQuitadosId] = useState("");
   const [apenasMalPagadoresQuitados, setApenasMalPagadoresQuitados] =
@@ -795,7 +798,21 @@ export default function Historico() {
                                 <strong style={{ color: "var(--text-muted)" }}>
                                   Total pago:
                                 </strong>{" "}
-                                {formatarMoeda(totalPagoEmp || 0)}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEmprestimoTotalPagoSelecionado({
+                                      id: emp?.id,
+                                      totalPago: totalPagoEmp || 0,
+                                    })
+                                  }
+                                  className="loan-total-paid-btn"
+                                >
+                                  <span>{formatarMoeda(totalPagoEmp || 0)}</span>
+                                  <span className="loan-total-paid-btn__hint">
+                                    Ver detalhes
+                                  </span>
+                                </button>
                               </div>
                               <div>
                                 <strong style={{ color: "var(--text-muted)" }}>
@@ -1268,6 +1285,13 @@ export default function Historico() {
           })}
         </div>
       )}
+
+      <DetalhesTotalPagoModal
+        aberto={!!emprestimoTotalPagoSelecionado}
+        onClose={() => setEmprestimoTotalPagoSelecionado(null)}
+        emprestimoId={emprestimoTotalPagoSelecionado?.id}
+        totalPago={emprestimoTotalPagoSelecionado?.totalPago || 0}
+      />
     </div>
   );
 }

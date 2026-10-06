@@ -28,5 +28,12 @@ export function gerarParcelasSimulacao({ capital, taxa_juros, qtdParcelas }) {
     if (Math.abs(saldo) < 1e-10) saldo = 0;
   }
 
+  const ultima = parcelas[parcelas.length - 1];
+  const somaAnteriores = fix2(
+    parcelas.slice(0, -1).reduce((soma, parcela) => soma + Number(parcela.valor_capital || 0), 0)
+  );
+  ultima.valor_capital = fix2(fix2(capitalNum) - somaAnteriores);
+  ultima.valor_total = fix2(ultima.valor_capital + Number(ultima.valor_juros || 0));
+
   return parcelas;
 }

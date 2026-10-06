@@ -1145,8 +1145,8 @@ button.cancelar:hover {
 /* Cartões de cada empréstimo (dentro do cliente) */
 .loan-entry {
   margin-bottom: 12px;
-  padding: 10px;
-  border-radius: 8px;
+  padding: 0;
+  border-radius: 10px;
   border: 1px solid var(--border-soft);
   background: var(--bg-card);
   color: var(--text-main);
@@ -1169,13 +1169,11 @@ button.cancelar:hover {
 .loan-entry--notify-modern {
   border-color: rgba(56, 189, 248, 0.48);
   border-radius: 10px;
-  padding: 8px;
   background:
-    radial-gradient(120% 120% at 0% 0%, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0) 40%),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.05) 0%, rgba(15, 23, 42, 0) 55%),
+    radial-gradient(110% 100% at 0% 0%, rgba(56, 189, 248, 0.12), rgba(56, 189, 248, 0) 42%),
     var(--bg-card);
   box-shadow:
-    0 10px 24px rgba(15, 23, 42, 0.14),
+    0 4px 14px rgba(15, 23, 42, 0.1),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
@@ -1290,6 +1288,79 @@ button.cancelar:hover {
   padding: 0 2px;
 }
 
+.loan-entry__compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 18px;
+  align-items: end;
+  padding: 14px 16px;
+}
+
+.loan-entry__identity {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.loan-entry__amount {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.loan-entry__amount-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.loan-entry__amount .valor-emprestado-toggle__text {
+  color: var(--text-main);
+  font-size: 1.12rem;
+  font-weight: 750;
+}
+
+.loan-entry__details-toggle {
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: transparent;
+  color: #2563eb;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.loan-entry__details-toggle:hover,
+.loan-entry__details-toggle:focus-visible {
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  outline: none;
+}
+
+.loan-entry__details {
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border-soft);
+  animation: loan-details-in 180ms ease-out;
+}
+
+@keyframes loan-details-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .loan-summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1304,15 +1375,12 @@ button.cancelar:hover {
 }
 
 .loan-summary-grid .loan-summary-item {
-  min-height: 34px;
+  min-height: 30px;
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  padding: 6px 10px;
-  border-radius: 7px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  background: rgba(15, 23, 42, 0.08);
+  padding: 3px 0;
 }
 
 .loan-summary-grid .loan-summary-item--observacao {
@@ -1372,14 +1440,14 @@ button.cancelar:hover {
 }
 
 .loan-action-row {
-  margin-top: 10px;
+  margin-top: 12px;
   display: flex;
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
   align-items: flex-start;
-  padding-top: 6px;
-  border-top: 1px dashed rgba(148, 163, 184, 0.45);
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
 }
 
 .loan-action-row__main {
@@ -1449,7 +1517,7 @@ button.cancelar:hover {
 }
 
 .loan-parcelas-shell {
-  margin-top: 7px;
+  margin-top: 12px;
   background: rgba(15, 23, 42, 0.08);
   color: var(--text-main);
   border-radius: 7px;
@@ -1458,6 +1526,21 @@ button.cancelar:hover {
 }
 
 @media (max-width: 820px) {
+  .loan-entry__compact {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .loan-entry__identity {
+    grid-column: auto;
+  }
+
+  .loan-entry__details-toggle {
+    justify-self: start;
+    padding-left: 0;
+  }
+
   .loan-summary-grid {
     grid-template-columns: 1fr;
   }
